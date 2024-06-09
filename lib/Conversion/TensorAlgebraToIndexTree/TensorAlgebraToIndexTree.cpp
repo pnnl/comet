@@ -19,11 +19,13 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
 
+#include <algorithm>
 #include <cassert>
 #include <unordered_set>
 
 #include "comet/Conversion/TensorAlgebraToIndexTree/TensorAlgebraToIndexTree.h"
 
+#include "comet/Dialect/IndexTree/Transforms/Tensor.h"
 #include "comet/Dialect/TensorAlgebra/IR/TADialect.h"
 #include "comet/Dialect/IndexTree/Transforms/UnitExpression.h"
 #include "comet/Dialect/IndexTree/IR/IndexTree.h"
@@ -53,8 +55,12 @@ namespace
       : public PassWrapper<LowerTensorAlgebraToIndexTreePass, OperationPass<func::FuncOp>>
   {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LowerTensorAlgebraToIndexTreePass)
+    LowerTensorAlgebraToIndexTreePass(TargetDevice device) : device(device){};
     void runOnOperation() override;
+  
+    TargetDevice device;
   };
+
 } /// namespace
 
 /**
@@ -196,7 +202,27 @@ IndicesType getUnion(IndicesType indices1, IndicesType indices2)
   return allIndices;
 }
 
-void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree)
+IndicesType gpuIndices(IndicesType indices1, IndicesType indices2)
+{
+  sort(indices1.begin(), indices1.end());
+  sort(indices2.begin(), indices2.end());
+
+  IndicesType interIndices;
+  IndicesType unIndices;
+  IndicesType difIndices;
+  IndicesType allIndices;
+
+  std::set_intersection(indices1.begin(), indices1.end(), indices2.begin(), indices2.end(),  std::back_inserter(interIndices));
+  set_union(indices1.begin(), indices1.end(), indices2.begin(), indices2.end(), std::back_inserter(unIndices));
+  std::set_difference(unIndices.begin(), unIndices.end(), interIndices.begin(), interIndices.end(), std::back_inserter(difIndices));
+  allIndices = difIndices;
+  allIndices.insert(allIndices.end(), interIndices.begin(), interIndices.end());
+
+  // allIndices.resize(it - allIndices.begin());
+  return allIndices;  
+}
+
+void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree, TargetDevice device = CPU)
 {
   Value rhs1_tensor = getRealRhs(op.getRhs1().getDefiningOp());
   Value rhs2_tensor = getRealRhs(op.getRhs2().getDefiningOp());
@@ -275,8 +301,21 @@ void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree)
 
   IndicesType rhs1_indices = tree->getIndices(rhs1_labels);
   IndicesType rhs2_indices = tree->getIndices(rhs2_labels);
+  IndicesType allIndices;
 
-  IndicesType allIndices = getUnion(rhs1_indices, rhs2_indices);
+  switch (device) 
+  {
+    case mlir::tensorAlgebra::CPU:
+    {
+      allIndices = getUnion(rhs1_indices, rhs2_indices);
+    }
+    break;
+    case mlir::tensorAlgebra::GPU:
+    {
+      allIndices = gpuIndices(rhs1_indices, rhs2_indices);
+    }
+    break;
+  }
   tree->setSizeOfIteratorTypes(allIndices.size()); // Set the total number of iterators
 
   auto lhsIndices = A->getIndices();
@@ -586,17 +625,11 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
     {
       if (isa<TensorMultOp>(&op))
       {
-#ifdef COMET_DEBUG_MODE
-        comet_debug() << "\n !!! doTensorMultOp\n";
-#endif
-        doTensorMultOp(cast<TensorMultOp>(&op), tree);
+        doTensorMultOp(cast<TensorMultOp>(&op), tree, device);
         formIndexTreeDialect = true;
       }
       else if (isa<TensorElewsMultOp>(&op))
       {
-#ifdef COMET_DEBUG_MODE
-        comet_debug() << "\n !!! doElementWiseOp<TensorElewsMultOp>\n";
-#endif
         doElementWiseOp<TensorElewsMultOp>(cast<TensorElewsMultOp>(&op), tree);
         formIndexTreeDialect = true;
       }
@@ -605,17 +638,11 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
         /// elementwise addition and subtraction
         if (isa<TensorAddOp>(&op))
         {
-#ifdef COMET_DEBUG_MODE
-          comet_debug() << "\n !!! doElementWiseOp<TensorAddOp>\n";
-#endif
           doElementWiseOp<TensorAddOp>(cast<TensorAddOp>(&op), tree);
         }
 
         if (isa<TensorSubtractOp>(&op))
         {
-#ifdef COMET_DEBUG_MODE
-          comet_debug() << "\n !!! doElementWiseOp<TensorSubtractOp>\n";
-#endif
           doElementWiseOp<TensorSubtractOp>(cast<TensorSubtractOp>(&op), tree);
         }
         formIndexTreeDialect = true;
@@ -632,8 +659,8 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
 }
 
 /// create all the passes.
-std::unique_ptr<Pass> mlir::comet::createLowerTensorAlgebraToIndexTreePass()
+std::unique_ptr<Pass> mlir::comet::createLowerTensorAlgebraToIndexTreePass(TargetDevice device)
 {
   comet_debug() << " Calling createLowerTensorAlgebraToIndexTreePass\n";
-  return std::make_unique<LowerTensorAlgebraToIndexTreePass>();
+  return std::make_unique<LowerTensorAlgebraToIndexTreePass>(device);
 }

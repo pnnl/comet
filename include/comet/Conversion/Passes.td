@@ -47,18 +47,18 @@ def ConvertIndexTreeToSCF : Pass<"convert-it-to-scf"> {
 // TensorAlgebraToIndexTree
 //===----------------------------------------------------------------------===//
 
-def ConvertTensorAlgebraToIndexTree : Pass<"convert-ta-to-it"> {
-  let summary = " "
-                "";
-  let description = [{
+// def ConvertTensorAlgebraToIndexTree : Pass<"convert-ta-to-it"> {
+//   let summary = " "
+//                 "";
+//   let description = [{
 
-      }];
-  let constructor = "comet::createLowerTensorAlgebraToIndexTreePass()";
-  let dependentDialects = [
-    "memref::MemRefDialect",
-    "scf::SCFDialect"
-  ];
-}
+//       }];
+//   let constructor = "comet::createLowerTensorAlgebraToIndexTreePass()";
+//   let dependentDialects = [
+//     "memref::MemRefDialect",
+//     "scf::SCFDialect"
+//   ];
+// }
 
 ///===----------------------------------------------------------------------===//
 /// TensorAlgebraToSCF

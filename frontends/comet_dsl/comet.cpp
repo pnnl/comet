@@ -27,6 +27,7 @@
 
 #include "comet/Dialect/TensorAlgebra/IR/TADialect.h"
 #include "comet/Dialect/TensorAlgebra/Passes.h"
+#include "comet/Dialect/Utils/Utils.h"
 #include "comet/Dialect/IndexTree/IR/IndexTreeDialect.h"
 #include "comet/Dialect/IndexTree/Passes.h"
 #include "comet/Conversion/Passes.h"
@@ -111,6 +112,18 @@ static cl::opt<bool> emitTA("emit-ta", cl::desc("output the Tensor Algebra diale
 static cl::opt<bool> emitIT("emit-it", cl::desc("output the Index Tree dialect dump"));
 static cl::opt<bool> emitLoops("emit-loops", cl::desc("output the SCF dialect dump"));
 static cl::opt<bool> emitLLVM("emit-llvm", cl::desc("output the LLVM dialect dump"));
+
+/// =============================================================================
+/// Godegen Target
+/// =============================================================================
+
+static cl::opt<TargetDevice> CodegenTarget("target", cl::init(CPU), cl::desc("Code generation target"), 
+    cl::values(
+      clEnumVal(CPU, "Codegen target is CPU"), 
+      clEnumVal(GPU, "Codegen target is GPU"))
+  );
+
+
 
 /// =============================================================================
 /// Optimization at the TA dialect (High-level optimizations) for tensor contraction operations
@@ -283,7 +296,7 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
   if (IsLoweringtoIndexTree || emitIT || emitLoops)
   {
     /// Generate the index tree IR
-    optPM.addPass(mlir::comet::createLowerTensorAlgebraToIndexTreePass());
+    optPM.addPass(mlir::comet::createLowerTensorAlgebraToIndexTreePass(CodegenTarget));
 
     if (OptKernelFusion)
     {

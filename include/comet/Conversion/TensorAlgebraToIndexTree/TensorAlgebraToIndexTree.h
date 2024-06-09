@@ -25,6 +25,7 @@
 #define COMET_CONVERSION_TENSORALGEBRATOINDEXTREE_H
 
 #include "mlir/Support/LLVM.h"
+#include "comet/Dialect/Utils/Utils.h"
 
 namespace mlir
 {
@@ -42,7 +43,7 @@ namespace mlir
 
         /// Lowers TensorAlgebra dialect operations (e.g., TensorMultOp, TensorElewsMultOp)
         /// to equivalent index tree dialect operations).
-        std::unique_ptr<Pass> createLowerTensorAlgebraToIndexTreePass();
+        std::unique_ptr<Pass> createLowerTensorAlgebraToIndexTreePass(mlir::tensorAlgebra::TargetDevice device);
     }
 } // namespace mlir
 
