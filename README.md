@@ -12,11 +12,12 @@ Comprehensive documentation of the COMET compiler can be found [here](https://pn
 These commands can be used to setup COMET project:
 
 1) **Install Dependencies** To install COMET and LLVM/MLIR, the following dependencies need to be installed:
-* [CMake (3.25 or later)](https://cmake.org/download),
-* [Ninja (1.5 or later)](https://ninja-build.org/),
-* C++ compiler toolchain as [mentioned here](https://llvm.org/docs/GettingStarted.html#requirements) and
-* [Python3 (3.9 or later)](https://www.python.org/downloads/).
-
+* [CMake (3.25 or later)](https://cmake.org/download)
+* [Ninja (1.5 or later)](https://ninja-build.org/)
+* C++ compiler toolchain as [mentioned here](https://llvm.org/docs/GettingStarted.html#requirements)
+* [Python3 (3.9 or later)](https://www.python.org/downloads/)
+* [Git (1.8.4 or later)](https://www.git-scm.com/)
+* [pkg-config (0.29.2 or later)](https://www.freedesktop.org/wiki/Software/pkg-config/)
 2) **Get submodules required for COMET.**  COMET contains LLVM and blis as a git
 submodule.  The LLVM repo here includes staged changes to MLIR which
 may be necessary to support COMET.  It also represents the version of
@@ -31,7 +32,7 @@ $ git clone https://github.com/pnnl/COMET.git
 $ export COMET_SRC=`pwd`/COMET
 $ cd $COMET_SRC
 $ git submodule init
-$ git submodule update
+$ git submodule update --depth=1 # --depth=1 requires git>=1.8.4
 ```
 
 

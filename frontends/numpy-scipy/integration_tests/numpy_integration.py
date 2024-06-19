@@ -63,3 +63,6 @@ if __name__ == '__main__':
                 print('='*40)
                 print(failed_test[1])
                 print('*'*40)
+    
+    if len(list_failed_tests) > 0:
+        exit(127)

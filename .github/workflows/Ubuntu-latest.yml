@@ -1,0 +1,161 @@
+# This starter workflow is for a CMake project running on a single platform. There is a different starter workflow if you need cross-platform coverage.
+# See: https://github.com/actions/starter-workflows/blob/main/ci/cmake-multi-platform.yml
+name: Test on Ubuntu Linux
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
+  BUILD_TYPE: Release
+  COMET_SRC: ${{github.workspace}}
+
+jobs:
+  build-and-test-comet:
+    # The CMake configure and build commands are platform agnostic and should work equally well on Windows or Mac.
+    # You can convert this to a matrix build if you need cross-platform coverage.
+    # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: lukka/get-cmake@latest
+    # - name: Install CMake
+    #   run: sudo apt-get install cmake && sudo apt-get install ninja-build
+    
+    - name: Cache Submodules
+      id: cache-submodule
+      uses: actions/cache@v4
+      # if: always()
+      with:
+        path: |
+          ${{github.workspace}}/llvm
+          ${{github.workspace}}/blis/
+          ${{github.workspace}}/install/
+          ${{github.workspace}}/build/
+        key: ${{ runner.os }}-submodules
+
+    - name: Update git submodules
+      if: steps.cache-submodule.outputs.cache-hit != 'true'
+      uses: actions/checkout@v3
+      with:
+        submodules: recursive
+
+    - name: Build llvm
+      if: steps.cache-submodule.outputs.cache-hit != 'true'
+      run: mkdir ${{github.workspace}}/llvm/build && cd llvm/build/ && cmake -G Ninja ../llvm -DLLVM_ENABLE_PROJECTS="mlir;openmp;clang" -DLLVM_TARGETS_TO_BUILD="X86" -DLLVM_ENABLE_ASSERTIONS=ON -DCMAKE_BUILD_TYPE=Release && ninja
+
+    - name: Build blis
+      if: steps.cache-submodule.outputs.cache-hit != 'true'
+      run: cd ${{github.workspace}} && patch -s -p0 < comet-blis.patch && cd blis && ./configure --prefix=$COMET_SRC/install --disable-shared auto && make && make install
+
+    - name: Build COMET
+      # Build your program with the given configuration
+      run: rm -rf ${{github.workspace}}/build && mkdir ${{github.workspace}}/build && cd ${{github.workspace}}/build && cmake -G Ninja .. -DMLIR_DIR=${{github.workspace}}/llvm/build/lib/cmake/mlir -DLLVM_DIR=${{github.workspace}}/llvm/build/lib/cmake/llvm -DLLVM_ENABLE_ASSERTIONS=ON -DCMAKE_BUILD_TYPE=Release && ninja 
+
+  # test-comet-backend:
+
+  #   needs: build-comet
+  #   runs-on: ubuntu-latest
+    
+  #   steps:
+  #   - uses: actions/checkout@v4
+  #   # - uses: lukka/get-cmake@latest
+  #   - name: Install CMake
+  #     run: sudo apt-get install cmake && sudo apt-get install ninja-build
+      
+  #   - name: Cache Submodules
+  #     id: cache-submodule
+  #     uses: actions/cache@v4
+  #     # if: always()
+  #     with:
+  #       path: |
+  #         ${{github.workspace}}/llvm
+  #         ${{github.workspace}}/blis/
+  #         ${{github.workspace}}/install/
+  #         ${{github.workspace}}/build/
+  #       key: ${{ runner.os }}-submodules
+    
+    - name: Initialize Python 3.11
+      uses: actions/setup-python@v4
+      
+      with:
+          python-version: 3.11
+      
+    - name: Install python dependencies
+      run: |
+          sudo apt-get install -y python3-psutil
+          sudo apt-get install -y python3-pip
+           
+    - name: Test
+      working-directory: ${{github.workspace}}/build
+      shell: bash
+       
+      run: ninja check-comet-integration
+          # ${{github.workspace}}/llvm/build/bin/mlir-cpu-runner --help
+          # ${{github.workspace}}/build/bin/comet-opt --help
+          
+  
+  # test-rust-frontend:
+  #   needs: build-comet
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #   - uses: actions/checkout@v4
+    
+  #   - name: Cache Submodules
+  #     id: cache-submodule
+  #     uses: actions/cache@v4
+  #     # if: always()
+  #     with:
+  #       path: |
+  #         ${{github.workspace}}/llvm
+  #         ${{github.workspace}}/blis/
+  #         ${{github.workspace}}/install/
+  #         ${{github.workspace}}/build/
+  #       key: ${{ runner.os }}-submodules
+        
+  #   - name: Setup Rust environment
+  #     run: rustup update stable && rustup default stable
+      
+  #   - name: Test Rust Frontend
+  #     env:
+  #       COMET_DIR: ${{github.workspace}}/
+  #     working-directory: ${{github.workspace}}/frontends/rust/comet-rs
+  #     run: |
+  #       cargo build
+  #       cargo test
+  
+  test-cometpy:
+    needs: build-and-test-comet
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Cache Submodules
+      id: cache-submodule
+      uses: actions/cache@v4
+      # if: always()
+      with:
+        path: |
+          ${{github.workspace}}/llvm
+          ${{github.workspace}}/blis/
+          ${{github.workspace}}/install/
+          ${{github.workspace}}/build/
+        key: ${{ runner.os }}-submodules
+        
+    - name: Initialize Python 3.11
+      uses: actions/setup-python@v4
+      
+      with:
+          python-version: 3.11
+
+    - name: Setup cometPy
+      run: cd ${{github.workspace}}/frontends/numpy-scipy/ && pip3 install -e .
+    
+    - name: Test CometPy
+      working-directory: ${{github.workspace}}/frontends/numpy-scipy/integration_tests/
+
+      run: python3 numpy_integration.py -v
