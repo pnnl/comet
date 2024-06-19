@@ -316,7 +316,7 @@ void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree, TargetDevice 
     }
     break;
   }
-  tree->setSizeOfIteratorTypes(allIndices.size()); // Set the total number of iterators
+  tree->setSizeOfIteratorTypes(allIndices.size());  // Set the total number of iterators
 
   auto lhsIndices = A->getIndices();
 
@@ -630,6 +630,9 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
       }
       else if (isa<TensorElewsMultOp>(&op))
       {
+        #ifdef COMET_DEBUG_MODE
+        comet_debug() << "\n !!! doElementWiseOp<TensorElewsMultOp>\n";
+        #endif
         doElementWiseOp<TensorElewsMultOp>(cast<TensorElewsMultOp>(&op), tree);
         formIndexTreeDialect = true;
       }
@@ -638,11 +641,17 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
         /// elementwise addition and subtraction
         if (isa<TensorAddOp>(&op))
         {
+          #ifdef COMET_DEBUG_MODE
+          comet_debug() << "\n !!! doElementWiseOp<TensorAddOp>\n";
+          #endif
           doElementWiseOp<TensorAddOp>(cast<TensorAddOp>(&op), tree);
         }
 
         if (isa<TensorSubtractOp>(&op))
         {
+          #ifdef COMET_DEBUG_MODE
+          comet_debug() << "\n !!! doElementWiseOp<TensorSubtractOp>\n";
+          #endif
           doElementWiseOp<TensorSubtractOp>(cast<TensorSubtractOp>(&op), tree);
         }
         formIndexTreeDialect = true;
