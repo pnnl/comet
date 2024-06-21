@@ -625,14 +625,21 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
     {
       if (isa<TensorMultOp>(&op))
       {
+<<<<<<< HEAD
         doTensorMultOp(cast<TensorMultOp>(&op), tree, device);
+=======
+#ifdef COMET_DEBUG_MODE
+        comet_debug() << "\n !!! doTensorMultOp\n";
+#endif
+        doTensorMultOp(cast<TensorMultOp>(&op), tree);
+>>>>>>> 26e637e (Lower parallel IndexNode to `scf::ParallelOp`.)
         formIndexTreeDialect = true;
       }
       else if (isa<TensorElewsMultOp>(&op))
       {
-        #ifdef COMET_DEBUG_MODE
+#ifdef COMET_DEBUG_MODE
         comet_debug() << "\n !!! doElementWiseOp<TensorElewsMultOp>\n";
-        #endif
+#endif
         doElementWiseOp<TensorElewsMultOp>(cast<TensorElewsMultOp>(&op), tree);
         formIndexTreeDialect = true;
       }
@@ -641,17 +648,17 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
         /// elementwise addition and subtraction
         if (isa<TensorAddOp>(&op))
         {
-          #ifdef COMET_DEBUG_MODE
+#ifdef COMET_DEBUG_MODE
           comet_debug() << "\n !!! doElementWiseOp<TensorAddOp>\n";
-          #endif
+#endif
           doElementWiseOp<TensorAddOp>(cast<TensorAddOp>(&op), tree);
         }
 
         if (isa<TensorSubtractOp>(&op))
         {
-          #ifdef COMET_DEBUG_MODE
+#ifdef COMET_DEBUG_MODE
           comet_debug() << "\n !!! doElementWiseOp<TensorSubtractOp>\n";
-          #endif
+#endif
           doElementWiseOp<TensorSubtractOp>(cast<TensorSubtractOp>(&op), tree);
         }
         formIndexTreeDialect = true;

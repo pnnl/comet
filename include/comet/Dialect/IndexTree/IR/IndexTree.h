@@ -27,7 +27,6 @@
 #include <algorithm>
 #include <map>
 #include <set>
-#include <string>
 
 #include "comet/Dialect/IndexTree/Transforms/Tensor.h"
 
