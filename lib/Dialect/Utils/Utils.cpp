@@ -1456,7 +1456,7 @@ namespace mlir
     }
 
     /// Get the input tensors of the itCompute op
-    void getInputTensorsOfComputeOp(Value computeOp, std::vector<Value> &inputTensors)
+    void getInputTensorsOfComputeOp(Value computeOp, std::vector<Value> &inputTensors /* output */)
     {
       /// indexTree::IndexTreeComputeOp itComputeOp = dyn_cast<indexTree::IndexTreeComputeOp>(computeOp.getDefiningOp());
       indexTree::IndexTreeComputeRHSOp itComputeOp_rhs = dyn_cast<indexTree::IndexTreeComputeRHSOp>(computeOp.getDefiningOp()->getOperand(0).getDefiningOp());
@@ -1471,7 +1471,7 @@ namespace mlir
     }
 
     /// Get the output tensors of the itCompute op
-    void getOutputTensorsOfComputeOp(Value computeOp, std::vector<Value> &outputTensors)
+    void getOutputTensorsOfComputeOp(Value computeOp, std::vector<Value> &outputTensors /* output */)
     {
       indexTree::IndexTreeComputeLHSOp itComputeOp_lhs = dyn_cast<indexTree::IndexTreeComputeLHSOp>(computeOp.getDefiningOp()->getOperand(1).getDefiningOp());
       for (unsigned int i = 0; i < itComputeOp_lhs.getOperation()->getNumOperands(); i++)
@@ -1539,11 +1539,11 @@ namespace mlir
             }
 
             std::vector<Value> leafop_inputTensors;
-            getInputTensorsOfComputeOp(leafop, leafop_inputTensors);
+            getInputTensorsOfComputeOp(leafop, leafop_inputTensors /* output */);
             comet_debug() << " getFormatsInfo:leafop_inputTensors.size(): " << leafop_inputTensors.size() << "\n";
 
             std::vector<Value> leafop_outputTensors;
-            getOutputTensorsOfComputeOp(leafop, leafop_outputTensors);
+            getOutputTensorsOfComputeOp(leafop, leafop_outputTensors /* output */);
             comet_debug() << " getFormatsInfo:leafop_outputTensors.size(): " << leafop_outputTensors.size() << "\n";
 
             std::vector<Value> leafop_tensors = leafop_inputTensors;
@@ -1629,7 +1629,7 @@ namespace mlir
         } /// for(auto j = 0; j < leafs.size(); j++){
 
         comet_debug() << " getFormatsInfo:formats_leafs.size(): " << formats_leafs.size() << "\n";
-        for (unsigned long k = 0; k < formats_leafs.size(); k++)
+        for ([[maybe_unused]] unsigned long k = 0; k < formats_leafs.size(); k++)
         {
           comet_debug() << " getFormatsInfo:formats_leafs[k]:" << formats_leafs[k] << "\n";
         }

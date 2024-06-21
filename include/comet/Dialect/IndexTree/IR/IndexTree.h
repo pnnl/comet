@@ -27,7 +27,6 @@
 #include <algorithm>
 #include <map>
 #include <set>
-#include <string>
 
 #include "comet/Dialect/IndexTree/Transforms/Tensor.h"
 
@@ -39,7 +38,7 @@ class IteratorType;
 class TreeNode
 {
 public:
-  int index = -1;  /// The iterator index. For example, i:0, j:1, k:2.
+  int index = -1; /// The iterator index. For example, i:0, j:1, k:2.
   UnitExpression *expr = nullptr;
   std::vector<TreeNode *> children;
   TreeNode *parent = nullptr;
@@ -208,7 +207,7 @@ class Index_Tree
   std::map<UnitExpression *, TreeNode *> exprToNode;
   std::map<void *, unique_ptr<Tensor>> valueToTensor;
   std::map<void *, int> indexLabelToId;
-  std::vector<unique_ptr<IteratorType>> iteratorTypes;  /// Iterator types of all iterators, referred by the indices
+  std::vector<unique_ptr<IteratorType>> iteratorTypes; /// Iterator types of all iterators, referred by the indices
   unsigned int indexID = 0;
 
 public:

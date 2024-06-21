@@ -28,6 +28,7 @@
 #include "comet/Dialect/IndexTree/IR/IndexTreeDialect.h"
 #include "comet/Dialect/Utils/Utils.h"
 #include "comet/Dialect/TensorAlgebra/IR/TADialect.h"
+#include "comet/Conversion/IndexTreeToSCF/AbstractLoopOp.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -209,52 +210,59 @@ namespace
   {
     /// private:
   public:
-    std::vector<scf::ForOp> forOps;         /// The (nested) for loops
+    // std::vector<scf::ForOp> forOps;         /// The (nested) for loops
+    std::vector<AbstractLoopOp> forOps;         /// The (nested) for loops
     std::vector<Value> accessIdx;           /// The coordinate of accessing that dimension
-    std::vector<scf::ForOp> symbolicForOps; /// For-loops in symbolic phase (if necessary)
+    // std::vector<scf::ForOp> symbolicForOps; /// For-loops in symbolic phase (if necessary)
+    std::vector<AbstractLoopOp> symbolicForOps; /// For-loops in symbolic phase (if necessary)
     std::vector<Value> symbolicAccessIdx;   /// The accessing index for that for-loop in symbolic phase (if necessary)
                                             ///  std::vector<Value> cmptOps;     /// The computation ops (no used?)
     std::vector<OpsTree *> children;
     OpsTree *parent;
     int id; /// the index in the ws_op array. The order is the DFS order.
 
-    std::vector<scf::ForOp> symbolicForOps_debug;
-    std::vector<Value> symbolicAccessIdx_debug;
+    // std::vector<scf::ForOp> symbolicForOps_debug;  /// (no used?)
+    // std::vector<Value> symbolicAccessIdx_debug;  /// (no used?)
 
   public:
-    OpsTree() {}
+    OpsTree() = default;
 
-    OpsTree(std::vector<scf::ForOp> &forOps, std::vector<Value> &accessIdx,
-            OpsTree *parent, int id) : forOps(forOps), accessIdx(accessIdx), parent(parent), id(id)
+    // OpsTree(std::vector<scf::ForOp> &forOps, std::vector<Value> &accessIdx,
+    //         OpsTree *parent, int id) : forOps(forOps), accessIdx(accessIdx), parent(parent), id(id)
+    // {
+    // }
+
+    OpsTree(OpsTree *parent, int id) : parent(parent), id(id)
     {
     }
 
-    OpsTree(std::vector<scf::ForOp> &forOps, std::vector<Value> &accessIdx,
-            OpsTree *parent) : forOps(forOps), accessIdx(accessIdx), parent(parent)
-    {
-    }
+    // (no used?)
+    // OpsTree(std::vector<scf::ForOp> &forOps, std::vector<Value> &accessIdx,
+    //         OpsTree *parent) : forOps(forOps), accessIdx(accessIdx), parent(parent)
+    // {
+    // }
 
-    ~OpsTree() {}
+    ~OpsTree() = default;
 
     void addChild(OpsTree *tree)
     { /// const T& node
       this->children.push_back(tree);
     }
 
-    std::vector<scf::ForOp> &getForOps()
-    {
-      return this->forOps;
-    }
+    // std::vector<scf::ForOp> &getForOps()
+    // {
+    //   return this->forOps;
+    // }
 
-    OpsTree *getParent()
-    {
-      return this->parent;
-    }
+    // OpsTree *getParent()
+    // {
+    //   return this->parent;
+    // }
 
-    void setForOps(std::vector<scf::ForOp> &forOps)
-    {
-      this->forOps = forOps;
-    }
+    // void setForOps(std::vector<scf::ForOp> &forOps)
+    // {
+    //   this->forOps = forOps;
+    // }
 
     std::vector<OpsTree *> &getChildren()
     {
@@ -566,12 +574,12 @@ namespace
     if (ancestorsOps.size() > 0)
     {
       /// ancestorsOps[0] stores the closest parent
-      scf::ForOp parent_forop = nullptr;
+      AbstractLoopOp parent_forop;
       comet_debug() << "\n";
-      std::vector<scf::ForOp> parent_forops = ancestorsOps[0]->forOps;
+      std::vector<AbstractLoopOp> parent_forops = ancestorsOps[0]->forOps;
       comet_debug() << " parent_forops.size(): " << parent_forops.size() << " \n";
 
-      parent_forop = parent_forops[parent_forops.size() - 1];
+      parent_forop = parent_forops.back();
 
       comet_debug() << " reset the insertion point\n";
       comet_vdump(parent_forop);
@@ -595,7 +603,7 @@ namespace
         else
         {
           comet_debug() << "\n";
-          std::vector<scf::ForOp> brother_forops = ancestorsOps[0]->getChildren()[order - 1]->forOps;
+          std::vector<AbstractLoopOp> brother_forops = ancestorsOps[0]->getChildren()[order - 1]->forOps;
           if (brother_forops.size() > 0)
           {
             comet_debug() << " brother_forops.size(): " << brother_forops.size() << "\n";
@@ -610,7 +618,7 @@ namespace
             { /// current opstree contains loops, insert in the body of the loops
               comet_debug() << " -------- current opstree contain loops --- impossible\n";
               comet_debug() << "Insertion point (brother_forops.size() > 0 &&  opstree->forOps.size() != 0)\n";
-              builder.setInsertionPoint(opstree->forOps[opstree->forOps.size() - 1].getBody()->getTerminator());
+              builder.setInsertionPoint(opstree->forOps.back().getBody()->getTerminator());
             }
           }
         }
@@ -628,7 +636,9 @@ namespace
                         unsigned int id,
                         unsigned int i,
                         std::vector<std::vector<Value>> &allAllocs,
-                        scf::ForOp &forLoop /* output */,
+                        llvm::StringRef &iteratorType,
+                        // scf::ForOp &forLoop /* output */,
+                        AbstractLoopOp &forLoop /* output */,
                         Value &accessIndex /* output */)
   {
     ///  Value upperBound;
@@ -647,16 +657,20 @@ namespace
       Value upperBound;
       auto dim = builder.create<tensor::DimOp>(loc, tensor, id);
       upperBound = dim;
-
-      auto loop = builder.create<scf::ForOp>(loc, lowerBound, upperBound, step);
-
+      // auto loop = builder.create<scf::ForOp>(loc, lowerBound, upperBound, step);
+      forLoop.buildLoopOp(iteratorType.str(),
+                          builder,
+                          loc,
+                          lowerBound,
+                          upperBound,
+                          step);
       comet_debug() << " D Loop\n";
-      comet_vdump(loop);
+      comet_vdump(forLoop);
 
       ///    opstree->forOps.push_back(loop);
       ///    opstree->accessIdx.push_back(loop.getInductionVar());
-      forLoop = loop;
-      accessIndex = loop.getInductionVar();
+      // forLoop = loop;
+      accessIndex = forLoop.getInductionVar();
     }
     else if (tensor.getType().isa<mlir::UnrankedTensorType>())
     {
@@ -676,13 +690,18 @@ namespace
       std::vector<Value> upper_indices = {index_0};
       Value upperBound = builder.create<memref::LoadOp>(loc, allAllocs[i][4 * id], upper_indices);
       comet_vdump(allAllocs[i][4 * id]);
-      auto loop = builder.create<scf::ForOp>(loc, lowerBound, upperBound, step);
-
+      // auto loop = builder.create<scf::ForOp>(loc, lowerBound, upperBound, step);
+      forLoop.buildLoopOp(iteratorType.str(),
+                          builder,
+                          loc,
+                          lowerBound,
+                          upperBound,
+                          step);
       comet_debug() << " D Loop\n";
-      comet_vdump(loop);
+      comet_vdump(forLoop);
 
-      forLoop = loop;
-      accessIndex = loop.getInductionVar();
+      // forLoop = loop;
+      accessIndex = forLoop.getInductionVar();
     }
     /// }
   }
@@ -697,9 +716,12 @@ namespace
                          unsigned int id,
                          unsigned int i,
                          std::vector<std::vector<Value>> &allAllocs,
-                         scf::ForOp &parent_forop,
+                        //  scf::ForOp &parent_forop,
+                         AbstractLoopOp &parent_forop,
                          Value &parent_accessIdx,
-                         scf::ForOp &forLoop /* output */,
+                         llvm::StringRef &iteratorType,
+                        //  scf::ForOp &forLoop /* output */,
+                         AbstractLoopOp &forLoop /* output */,
                          Value &accessIndex /* output */)
   {
     /// Generate for(int m = pos[0]; m < pos[1]; m++){int i = crd[m];}
@@ -776,19 +798,25 @@ namespace
       std::vector<Value> upper_indices = {index_upper};
       Value upperBound = builder.create<memref::LoadOp>(loc, allAllocs[i][4 * id], upper_indices); /// 2 * id
       auto step = builder.create<ConstantIndexOp>(loc, 1);
-      auto loop = builder.create<scf::ForOp>(loc, lowerBound, upperBound, step);
+      // auto loop = builder.create<scf::ForOp>(loc, lowerBound, upperBound, step);
+      forLoop.buildLoopOp(iteratorType.str(),
+                          builder,
+                          loc,
+                          lowerBound,
+                          upperBound,
+                          step);
 
       comet_debug() << " CU Loop\n";
-      comet_vdump(loop);
+      comet_vdump(forLoop);
 
-      builder.setInsertionPoint(loop.getBody()->getTerminator());
+      builder.setInsertionPoint(forLoop.getBody()->getTerminator());
 
-      std::vector<Value> crd_indices = {loop.getInductionVar()};
+      std::vector<Value> crd_indices = {forLoop.getInductionVar()};
       auto get_index = builder.create<memref::LoadOp>(loc, allAllocs[i][4 * id + 1], crd_indices);
 
       comet_debug() << "CU loop generated\n";
-      comet_vdump(loop);
-      forLoop = loop;
+      comet_vdump(forLoop);
+      // forLoop = loop;
       accessIndex = get_index;
     }
   }
@@ -802,7 +830,9 @@ namespace
                          unsigned int id,
                          unsigned int i,
                          std::vector<std::vector<Value>> &allAllocs,
-                         scf::ForOp &forLoop /* output */,
+                         llvm::StringRef &iteratorType,
+                        //  scf::ForOp &forLoop /* output */,
+                         AbstractLoopOp &forLoop /* output */,
                          Value &accessIndex /* output */)
   {
     /// Generate for(int m = pos[0]; m < pos[1]; m++){int i = crd[m];}
@@ -816,17 +846,23 @@ namespace
       std::vector<Value> upper_indices = {index_1};
       Value upperBound = builder.create<memref::LoadOp>(loc, allAllocs[i][4 * id], upper_indices);
       auto step = builder.create<ConstantIndexOp>(loc, 1);
-      auto loop = builder.create<scf::ForOp>(loc, lowerBound, upperBound, step);
+      // auto loop = builder.create<scf::ForOp>(loc, lowerBound, upperBound, step);
+      forLoop.buildLoopOp(iteratorType.str(),
+                          builder,
+                          loc,
+                          lowerBound,
+                          upperBound,
+                          step);
 
       comet_debug() << " CN Loop\n";
-      comet_vdump(loop);
+      comet_vdump(forLoop);
 
-      builder.setInsertionPoint(loop.getBody()->getTerminator());
+      builder.setInsertionPoint(forLoop.getBody()->getTerminator());
 
-      std::vector<Value> crd_indices = {loop.getInductionVar()};
+      std::vector<Value> crd_indices = {forLoop.getInductionVar()};
       auto get_index = builder.create<memref::LoadOp>(loc, allAllocs[i][4 * id + 1], crd_indices);
 
-      forLoop = loop;
+      // forLoop = loop;
       accessIndex = get_index;
     }
   }
@@ -841,9 +877,10 @@ namespace
                         unsigned int id,
                         unsigned int i,
                         std::vector<std::vector<Value>> &allAllocs,
-                        std::vector<scf::ForOp> &opstree_forops,
-                        scf::ForOp &parent_forop,
-                        scf::ForOp &forLoop /* output */,
+                        std::vector<AbstractLoopOp> &opstree_forops,
+                        AbstractLoopOp &parent_forop,
+                        llvm::StringRef &iteratorType,
+                        AbstractLoopOp &forLoop /* output */,
                         Value &accessIndex /* output */)
   {
     /// Currently supported formats, Singleton is not the format of first dimension
@@ -854,7 +891,7 @@ namespace
     {
       comet_debug() << "cur_idx is in tensor " << i << "\n";
       /// Accesing the last level loop info
-      scf::ForOp last_forop;
+      AbstractLoopOp last_forop;
       if (opstree_forops.size() > 0)
       { /// current node contain at least 1 level loop
         last_forop = opstree_forops.back();
@@ -874,10 +911,16 @@ namespace
       Value lowerBound = builder.create<ConstantIndexOp>(loc, 0);
       Value upperBound = builder.create<ConstantIndexOp>(loc, 1);
       auto step = builder.create<ConstantIndexOp>(loc, 1);
-      auto loop = builder.create<scf::ForOp>(loc, lowerBound, upperBound, step);
+      // auto loop = builder.create<scf::ForOp>(loc, lowerBound, upperBound, step);
+      forLoop.buildLoopOp(iteratorType.str(),
+                          builder,
+                          loc,
+                          lowerBound,
+                          upperBound,
+                          step);
       comet_debug() << " S Loop\n";
-      comet_vdump(loop);
-      forLoop = loop;
+      comet_vdump(forLoop);
+      // forLoop = loop;
       accessIndex = get_index;
     }
     else
@@ -895,9 +938,9 @@ namespace
     if (ancestorsOps.size() > 0)
     {
       /// ancestorsOps[0] stores the closest parent
-      scf::ForOp parent_forop = nullptr;
+      AbstractLoopOp parent_forop;
       comet_debug() << "\n";
-      std::vector<scf::ForOp> parent_forops = ancestorsOps[0]->symbolicForOps;
+      std::vector<AbstractLoopOp> parent_forops = ancestorsOps[0]->symbolicForOps;
       comet_debug() << " parent_forops.size(): " << parent_forops.size() << " \n";
 
       parent_forop = parent_forops.back();
@@ -924,7 +967,7 @@ namespace
         else
         {
           comet_debug() << "\n";
-          std::vector<scf::ForOp> brother_forops = ancestorsOps[0]->getChildren()[order - 1]->symbolicForOps;
+          std::vector<AbstractLoopOp> brother_forops = ancestorsOps[0]->getChildren()[order - 1]->symbolicForOps;
           if (brother_forops.size() > 0)
           {
             comet_debug() << " brother_forops.size(): " << brother_forops.size() << "\n";
@@ -960,7 +1003,7 @@ namespace
                                            Location &loc,
                                            int lhs_loc,
                                            ConstantOp &cstop,
-                                           std::vector<scf::ForOp> &nested_forops,
+                                           std::vector<AbstractLoopOp> &nested_forops,
                                            std::vector<std::vector<Value>> &tensors_lhs_Allocs,
                                            std::vector<std::vector<Value>> &main_tensors_all_Allocs,
                                            bool use_dynamic_init,
@@ -1019,7 +1062,8 @@ namespace
                  indexTree::IndexTreeOp rootOp,
                  OpBuilder &builder,
                  OpsTree *opstree,
-                 SymbolicInfo &symbolicInfo)
+                 SymbolicInfo &symbolicInfo,
+                 llvm::StringRef &iteratorType)
   {
     comet_debug() << " genForOps indexTreeOp\n";
     comet_vdump(rootOp);
@@ -1028,7 +1072,7 @@ namespace
     std::vector<OpsTree *> ancestorsOps;
     getAncestorsOps(opstree, ancestorsOps);
     comet_debug() << " genForOps ancestorsOps.size(): " << ancestorsOps.size() << "\n";
-    for (unsigned int i = 0; i < ancestorsOps.size(); i++)
+    for ([[maybe_unused]] unsigned int i = 0; i < ancestorsOps.size(); i++)
     {
       comet_debug() << " ancestorsOps[" << i << "]->forOps.size(): " << ancestorsOps[i]->forOps.size()
                     << ", ancestorsOps->id: "
@@ -1038,7 +1082,7 @@ namespace
     std::vector<std::vector<Value>> allAllocs = getAllAllocs(tensors);
 
     comet_debug() << "Tensors:\n";
-    for (unsigned int i = 0; i < tensors.size(); i++)
+    for ([[maybe_unused]]unsigned int i = 0; i < tensors.size(); i++)
     {
       comet_vdump(tensors[i]);
     }
@@ -1077,7 +1121,7 @@ namespace
                                            ancestorsOps,
                                            opstree);
 
-          scf::ForOp forLoop;
+          AbstractLoopOp forLoop;
           Value accessIndex;
           genForOpFormat_D(builder,
                            loc,
@@ -1085,6 +1129,7 @@ namespace
                            id,
                            i,
                            allAllocs,
+                           iteratorType,
                            forLoop /* output */,
                            accessIndex /* output */);
           opstree->symbolicForOps.push_back(forLoop);
@@ -1096,7 +1141,7 @@ namespace
         /// Check which tensor is sparse, which is dense;
         /// Since this function only handles mixed sparse/dense, then "D" only occurs in one tensor
         /// Both the dense and sparse tensor contain the dim size; But they are different. Use one.
-        scf::ForOp forLoop;
+        AbstractLoopOp forLoop;
         Value accessIndex;
         genForOpFormat_D(builder,
                          loc,
@@ -1104,6 +1149,7 @@ namespace
                          id,
                          i,
                          allAllocs,
+                         iteratorType,
                          forLoop /* output */,
                          accessIndex /* output */);
         opstree->forOps.push_back(forLoop);
@@ -1123,9 +1169,9 @@ namespace
                                            ancestorsOps,
                                            opstree);
 
-          scf::ForOp forLoop;
+          AbstractLoopOp forLoop;
           Value accessIndex;
-          scf::ForOp parent_forop;
+          AbstractLoopOp parent_forop;
           Value parent_accessIdx;
           if (nullptr != opstree->parent)
           {
@@ -1141,6 +1187,7 @@ namespace
                             allAllocs,
                             parent_forop,
                             parent_accessIdx,
+                            iteratorType,
                             forLoop /* output */,
                             accessIndex /* output */);
           opstree->symbolicForOps.push_back(forLoop);
@@ -1156,9 +1203,9 @@ namespace
         /// j = crd[i];
         /// for (int m = pos[j]; m < pos[j+1]; m++)
 
-        scf::ForOp forLoop;
+        AbstractLoopOp forLoop;
         Value accessIndex;
-        scf::ForOp parent_forop;
+        AbstractLoopOp parent_forop;
         Value parent_accessIdx;
         if (nullptr != opstree->parent)
         {
@@ -1174,6 +1221,7 @@ namespace
                           allAllocs,
                           parent_forop,
                           parent_accessIdx,
+                          iteratorType,
                           forLoop /* output */,
                           accessIndex /* output */);
         opstree->forOps.push_back(forLoop);
@@ -1182,7 +1230,7 @@ namespace
       else if (format.compare(0, 2, "CN") == 0)
       {
         /// Generate for(int m = pos[0]; m < pos[1]; m++){int i = crd[m];}
-        scf::ForOp forLoop;
+        AbstractLoopOp forLoop;
         Value accessIndex;
         genForOpFormat_CN(builder,
                           loc,
@@ -1190,6 +1238,7 @@ namespace
                           id,
                           i,
                           allAllocs,
+                          iteratorType,
                           forLoop /* output */,
                           accessIndex /* output */);
         opstree->forOps.push_back(forLoop);
@@ -1200,10 +1249,10 @@ namespace
         /// Currently supported formats, Singleton is not the format of first dimension
         /// and it doesn't produce a loop
         /// Generate: int j = A2crd[m];
-        scf::ForOp forLoop;
+        AbstractLoopOp forLoop;
         Value accessIndex;
-        std::vector<scf::ForOp> &opstree_forops = opstree->forOps;
-        scf::ForOp parent_forop;
+        std::vector<AbstractLoopOp> &opstree_forops = opstree->forOps;
+        AbstractLoopOp parent_forop;
         if (nullptr != opstree->parent)
         {
           parent_forop = opstree->parent->forOps.back();
@@ -1217,6 +1266,7 @@ namespace
                          allAllocs,
                          opstree_forops,
                          parent_forop,
+                         iteratorType,
                          forLoop /* output */,
                          accessIndex /* output */);
         opstree->forOps.push_back(forLoop);
@@ -1588,7 +1638,7 @@ namespace
   /// It should be deprecated in the future, as the bitmap would be lowered from the Index Tree dialect.
   void genNumericBitmap(OpBuilder &builder,
                         Location &loc,
-                        scf::ForOp &symbolic_outermost_forLoop,
+                        AbstractLoopOp &symbolic_outermost_forLoop,
                         SymbolicInfo &symbolicInfo,
                         Value &bitmap_alloc)
   {
@@ -1631,7 +1681,7 @@ namespace
   /// Please don't confuse with mark-array.
   void genNumericMaskArray(OpBuilder &builder,
                            Location &loc,
-                           scf::ForOp &numeric_outermost_forLoop,
+                           AbstractLoopOp &numeric_outermost_forLoop,
                            SymbolicInfo &symbolicInfo,
                            NumericInfo &numericInfo /* output */)
   {
@@ -1699,7 +1749,7 @@ namespace
   ///      }
   void genNumericSetAndResetMaskArray(OpBuilder &builder,
                                       Location &loc,
-                                      scf::ForOp &numeric_outermost_forLoop,
+                                      AbstractLoopOp &numeric_outermost_forLoop,
                                       Value &outermost_forLoop_valueAccessIdx,
                                       NumericInfo &numericInfo,
                                       MaskingInfo &maskingInfo)
@@ -1780,9 +1830,9 @@ namespace
                             std::vector<std::vector<Value>> &tensors_rhs_Allocs,
                             std::vector<std::vector<Value>> &allValueAccessIdx,
                             std::vector<std::vector<Value>> &allAccessIdx,
-                            std::vector<scf::ForOp> &forLoops /* numeric for-loop statements, from innermost to outermost*/,
+                            std::vector<AbstractLoopOp> &forLoops /* numeric for-loop statements, from innermost to outermost*/,
                             std::vector<Value> &numeric_nested_forLoop_AccessIdx,
-                            std::vector<scf::ForOp> &symbolic_nested_forops /* symbolic for-loops from innermost to outermost */,
+                            std::vector<AbstractLoopOp> &symbolic_nested_forops /* symbolic for-loops from innermost to outermost */,
                             std::vector<std::vector<int>> &rhsPerms,
                             SymbolicInfo &symbolicInfo,
                             NumericInfo &numericInfo,
@@ -2221,7 +2271,7 @@ namespace
   void genWorkspaceCmptOpGatherFromWorkspaceToOutput(OpBuilder &builder,
                                                      Location &loc,
                                                      std::vector<std::vector<Value>> &tensors_rhs_Allocs,
-                                                     std::vector<scf::ForOp> &nested_forops,
+                                                     std::vector<AbstractLoopOp> &nested_forops,
                                                      std::vector<Value> &nested_AccessIdx,
                                                      SymbolicInfo &symbolicInfo,
                                                      NumericInfo &numericInfo)
@@ -2230,8 +2280,8 @@ namespace
     auto last_insertion_point = builder.saveInsertionPoint();
 
     assert(nested_forops.size() >= 2 && nested_AccessIdx.size() >= 2 && "Error: should be at least 2 levels of for-loop.\n");
-    scf::ForOp &curr_for_loop = nested_forops[0];
-    scf::ForOp parent_for_loop = nested_forops[1];
+    AbstractLoopOp &curr_for_loop = nested_forops[0];
+    AbstractLoopOp parent_for_loop = nested_forops[1];
 
     /// Set the insertion point before the innermost for-loop
     builder.setInsertionPoint(curr_for_loop);
@@ -2306,7 +2356,7 @@ namespace
   /// In genCmptOps, get current compute node's numeric nested for-loop and access indices.
   void getNumericNestedForOpsAndAccessIdx(std::vector<Value> &ancestorsWps,
                                           std::vector<OpsTree *> &ancestorsOps,
-                                          std::vector<scf::ForOp> &nested_forops /* output */,
+                                          std::vector<AbstractLoopOp> &nested_forops /* output */,
                                           std::vector<Value> &nested_AccessIdx /* output */,
                                           std::vector<int64_t> &nested_forops_indices /* output */)
   {
@@ -2486,7 +2536,7 @@ namespace
                                  std::vector<std::vector<int>> &allPerms,
                                  std::vector<std::vector<std::string>> &allFormats,
                                  std::vector<Value> &main_tensors_all,
-                                 std::vector<scf::ForOp> &nested_forops,
+                                 std::vector<AbstractLoopOp> &nested_forops,
                                  std::vector<Value> &nested_AccessIdx,
                                  std::vector<int64_t> &nested_forops_indices,
                                  std::vector<std::vector<Value>> &main_tensors_all_Allocs,
@@ -2583,7 +2633,7 @@ namespace
   /// In genCmptOps, get current compute node's symbolic nested for-loop and access indices.
   void getSymbolicNestedForOpsAndAccessIdx(std::vector<Value> &ancestorsWps,
                                            std::vector<OpsTree *> &ancestorsOps,
-                                           std::vector<scf::ForOp> &nested_forops /* output */,
+                                           std::vector<AbstractLoopOp> &nested_forops /* output */,
                                            std::vector<Value> &nested_AccessIdx /* output */,
                                            std::vector<int64_t> &nested_forops_indices /* output */)
   {
@@ -2635,7 +2685,7 @@ namespace
                                          Location &loc,
                                          int lhs_loc,
                                          ConstantOp &cstop,
-                                         std::vector<scf::ForOp> &nested_forops,
+                                         std::vector<AbstractLoopOp> &nested_forops,
                                          std::vector<std::vector<Value>> &main_tensors_all_Allocs,
                                          std::vector<std::vector<Value>> &allValueAccessIdx)
   {
@@ -2754,7 +2804,7 @@ namespace
                                         std::vector<std::vector<Value>> &main_tensors_all_Allocs,
                                         std::vector<std::vector<Value>> &allAccessIdx,
                                         std::vector<std::vector<Value>> &allValueAccessIdx,
-                                        std::vector<scf::ForOp> &nested_forops)
+                                        std::vector<AbstractLoopOp> &nested_forops)
   {
 
     /// %1 = load b[...]
@@ -2959,7 +3009,7 @@ namespace
   void genSymbolicMarkAndUpdate(OpBuilder &builder,
                                 Location &loc,
                                 ///                              std::vector<scf::ForOp> &symbolic_nested_forops, /* from innermost to outermost */
-                                scf::ForOp &outermost_forLoop, /// the outermost for-loop
+                                AbstractLoopOp &outermost_forLoop, /// the outermost for-loop
                                 Value &mark_alloc /* output */,
                                 Value &mark_new_val /* output */)
   {
@@ -3017,7 +3067,7 @@ namespace
   ///      }
   void genSymbolicIfStatementCondition(OpBuilder &builder,
                                        Location &loc,
-                                       scf::ForOp &semiringLoop, /// symbolic_nested_forops[0]
+                                       AbstractLoopOp &semiringLoop, /// symbolic_nested_forops[0]
                                        Value &mark_array_alloc,  /// tensors_lhs_Allocs[1][0]
                                        Value &valueAccessIdx,    /// allValueAccessIdx[lhs_loc][0]
                                        Value &mark_new_val,
@@ -3132,7 +3182,7 @@ namespace
   ///     C.rowptr[idx] = W_id_list_size;
   void genSymbolicUpdateCRowptr(OpBuilder &builder,
                                 Location &loc,
-                                scf::ForOp &outermost_forLoop,
+                                AbstractLoopOp &outermost_forLoop,
                                 Value &mtxC_rowptr,
                                 Value &valueAccessIdx,
                                 Value &W_id_list_size)
@@ -3174,7 +3224,7 @@ namespace
   ///   C.val = new f64[C_val_size]
   void genSymbolicReduceOutputCRowptrCColCVal(OpBuilder &builder,
                                               Location &loc,
-                                              scf::ForOp &outermost_forLoop,
+                                              AbstractLoopOp &outermost_forLoop,
                                               SymbolicInfo &symbolicInfo /* output */)
   {
     Value const_index_0 = builder.create<ConstantIndexOp>(loc, 0);
@@ -3302,7 +3352,7 @@ namespace
   /// Replace the old C.val and C.col with new ones.
   void deallocMtxCColCVal(OpBuilder &builder,
                           Location &loc,
-                          scf::ForOp &outermost_forLoop,
+                          AbstractLoopOp &outermost_forLoop,
                           SymbolicInfo &symbolicInfo)
   {
     /// Find old C.col and C.val
@@ -3340,7 +3390,7 @@ namespace
   /// (e.g., ta.print(old_tensor)  ->  ta.print(new_tensor)
   void genReplaceOutputSparseTensorToNewSparseTensor(OpBuilder &builder,
                                                      Location &loc,
-                                                     scf::ForOp &numeric_outermost_forLoop,
+                                                     AbstractLoopOp &numeric_outermost_forLoop,
                                                      SymbolicInfo &symbolicInfo)
   {
     /// Set the insertion point after the outermost_forloop
@@ -3394,9 +3444,9 @@ namespace
   /// 3. Generate a new sparse tensor to replace the old output sparse tensor after the numeric outermost for-loop.
   void logisticsForMtxCColCVal(OpBuilder &builder,
                                Location &loc,
-                               scf::ForOp &symbolic_outermost_forLoop,
+                               AbstractLoopOp &symbolic_outermost_forLoop,
                                SymbolicInfo &symbolicInfo,
-                               scf::ForOp &numeric_outermost_forLoop)
+                               AbstractLoopOp &numeric_outermost_forLoop)
   {
 
     /// Dealloc old C.col and C.val
@@ -3436,7 +3486,7 @@ namespace
   ///      }
   void genSymbolicInitMarkArrayByMask(OpBuilder &builder,
                                       Location &loc,
-                                      scf::ForOp &symbolic_outermost_forLoop,
+                                      AbstractLoopOp &symbolic_outermost_forLoop,
                                       Value &outermost_forLoop_valueAccessIdx,
                                       Value &mark_array_alloc,
                                       Value &mark_new_val,
@@ -3497,17 +3547,17 @@ namespace
                                    Location &loc,
                                    int lhs_loc,
                                    std::vector<std::vector<Value>> &tensors_lhs_Allocs,
-                                   std::vector<scf::ForOp> &symbolic_nested_forops,
+                                   std::vector<AbstractLoopOp> &symbolic_nested_forops,
                                    std::vector<Value> &symbolic_nested_AccessIdx,
                                    std::vector<std::vector<Value>> &symbolic_allValueAccessIdx,
                                    SymbolicInfo &symbolicInfo,
-                                   std::vector<scf::ForOp> &numeric_nested_forops,
+                                   std::vector<AbstractLoopOp> &numeric_nested_forops,
                                    MaskingInfo &maskingInfo)
   {
 
-    scf::ForOp &outermost_forLoop = symbolic_nested_forops.back();
+    AbstractLoopOp &outermost_forLoop = symbolic_nested_forops.back();
     Value &outermost_forLoop_valueAccessIdx = symbolic_nested_AccessIdx.back();
-    scf::ForOp &semiringLoop = symbolic_nested_forops[0];
+    AbstractLoopOp &semiringLoop = symbolic_nested_forops[0];
     Value &mark_array = tensors_lhs_Allocs[1][0];
     Value &W_id_list_size = tensors_lhs_Allocs[3][0];
     Value &semiringLoop_valueAccessIdx = symbolic_allValueAccessIdx[lhs_loc][0];
@@ -3597,7 +3647,7 @@ namespace
     /// 1. Dealloc the old C.val and C.col before the outermost_forLoop.
     /// 2. Change mtxC's old value in C_col_size (A2crd_size) and C_val_size (Aval_size) to new mtxC_val_size.
     /// 3. Generate a new sparse tensor to replace the old output sparse tensor after the numeric outermost for-loop.
-    scf::ForOp &numeric_outermost_forLoop = numeric_nested_forops.back();
+    AbstractLoopOp &numeric_outermost_forLoop = numeric_nested_forops.back();
     logisticsForMtxCColCVal(builder,
                             loc,
                             outermost_forLoop, /// symbolic_outermost_forLoop
@@ -3648,7 +3698,7 @@ namespace
     }
 
     /// 1. get the nested loops, from innermost to outermost order
-    std::vector<scf::ForOp> nested_forops;
+    std::vector<AbstractLoopOp> nested_forops;
     std::vector<Value> nested_AccessIdx;
     std::vector<int64_t> nested_forops_indices; /// Each nested indexOp's index value (e.g., indices=[0])
     getNumericNestedForOpsAndAccessIdx(ancestorsWps,
@@ -3727,7 +3777,7 @@ namespace
                               allValueAccessIdx /* output */);
 
     /// Symbolic Phase preparation
-    std::vector<scf::ForOp> symbolic_nested_forops;
+    std::vector<AbstractLoopOp> symbolic_nested_forops;
     std::vector<Value> symbolic_nested_AccessIdx;
     std::vector<int64_t> symbolic_nested_forops_indices;
     std::vector<std::vector<Value>> symbolic_allAccessIdx(main_tensor_nums);
@@ -4267,8 +4317,8 @@ void LowerIndexTreeToSCFPass::doLoweringIndexTreeToSCF(indexTree::IndexTreeOp &r
   std::vector<OpsTree *> opstree_vec;
   for (unsigned int i = 0; i < wp_ops.size(); i++)
   {
-    std::vector<scf::ForOp> forOps;
-    std::vector<Value> accessIdx;
+    // std::vector<scf::ForOp> forOps;
+    // std::vector<Value> accessIdx;
 
     OpsTree *parent = nullptr;
     if (i >= 1)
@@ -4276,7 +4326,8 @@ void LowerIndexTreeToSCFPass::doLoweringIndexTreeToSCF(indexTree::IndexTreeOp &r
       parent = opstree_vec[parent_idx[i]];
     }
     comet_debug() << " \n";
-    OpsTree *ops = new OpsTree(forOps, accessIdx, parent, i);
+    // OpsTree *ops = new OpsTree(forOps, accessIdx, parent, i);
+    OpsTree *ops = new OpsTree(parent, i);
     if (parent != nullptr)
     { /// add child to the parent
       parent->addChild(ops);
@@ -4374,6 +4425,7 @@ void LowerIndexTreeToSCFPass::doLoweringIndexTreeToSCF(indexTree::IndexTreeOp &r
                      tensors /* output */,
                      ids /* output */,
                      formats /* output */);
+      llvm::StringRef iteratorType = cur_op.getIteratorType();
 
       comet_debug() << " indices.size(): " << indices.size() << " tensors.size(): " << tensors.size() << "\n";
       for ([[maybe_unused]] unsigned int m = 0; m < tensors.size(); m++)
@@ -4383,7 +4435,7 @@ void LowerIndexTreeToSCFPass::doLoweringIndexTreeToSCF(indexTree::IndexTreeOp &r
       }
 
       comet_debug() << " call genForOps, i = " << i << "\n";
-      genForOps(tensors, ids, formats, rootOp, builder, opstree_vec[i], symbolicInfo);
+      genForOps(tensors, ids, formats, rootOp, builder, opstree_vec[i], symbolicInfo, iteratorType);
       {
         comet_pdump(rootOp->getParentOfType<ModuleOp>());
       }
