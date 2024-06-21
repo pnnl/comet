@@ -254,8 +254,7 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
 
   mlir::PassManager pm(module.get()->getName());
   /// Apply any generic pass manager command line options and run the pipeline.
-  if (mlir::failed(mlir::applyPassManagerCLOptions(pm)))
-    return 4;
+  applyPassManagerCLOptions(pm);
 
   /// Lower tensorAlgebra:FuncOp to func::FuncOp
   pm.addPass(mlir::comet::createFuncOpLoweringPass());

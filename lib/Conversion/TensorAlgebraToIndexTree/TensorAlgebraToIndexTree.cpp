@@ -66,58 +66,38 @@ namespace
 /**
  * @brief Check if the given allPerms is from one of the chosen operations.
  * Current algorithm is to check the pattern of the allPerms to see if it is tensor contraction.
- * Current chosen operations includes:
- * dense matrix-matrix multiplication (MM),
- * dense matrix-vector multiplication (MV),
- * sparse matrix-dense matrix multiplication (SpMM),
+ * Current chosen operations includes: 
+ * dense matrix-matrix multiplication (MM), 
+ * dense matrix-vector multiplication (MV), 
+ * sparse matrix-dense matrix multiplication (SpMM), 
  * sparse matrix-dense vector multiplication (SpMV)
- *
+ * 
  * @param allPerms allPerms from the operation. For example, [[d0, d1], [d1, d2], [d0, d2]]
  * @return true : it is one of the chosen operations.
  * @return false : it is not.
  */
-bool check_chosen_operations(const std::vector<std::vector<int64_t>> &allPerms,
-                             const std::vector<std::vector<std::string>> &allFormats)
-{
-  if (allPerms.size() != 3)
-  {
+bool check_chosen_operations(const std::vector<std::vector<int64_t>> &allPerms) {
+  if (allPerms.size() != 3) {
     return false;
   }
-
-  /// The output tensor should be dense.
-  auto lhs_formats = allFormats[2];
-  for (auto &f : lhs_formats)
-  {
-    if (f != "D")
-    {
-      return false;
-    }
-  }
-
   /// do lhs = op(rhs1, rhs2)
   const std::vector<int64_t> &rhs1_perms = allPerms[0];
   const std::vector<int64_t> &rhs2_perms = allPerms[1];
   const std::vector<int64_t> &lhs_perms = allPerms[2];
 
-  if (rhs1_perms.size() == 2)
-  {
-    if (rhs2_perms.size() == 2 && lhs_perms.size() == 2)
-    {
+  if (rhs1_perms.size() == 2) {
+    if (rhs2_perms.size() == 2 && lhs_perms.size() == 2) {
       /// If it is op(matrix, matrix)
-      if (rhs1_perms[0] == lhs_perms[0] &&
-          rhs1_perms[1] == rhs2_perms[0] &&
-          rhs2_perms[1] == lhs_perms[1])
-      {
+      if (rhs1_perms[0] == lhs_perms[0] && 
+          rhs1_perms[1] == rhs2_perms[0] && 
+          rhs2_perms[1] == lhs_perms[1]) {
         /// Then op is MM or SpMM
         return true;
       }
-    }
-    else if (rhs2_perms.size() == 1 && lhs_perms.size() == 1)
-    {
+    } else if (rhs2_perms.size() == 1 && lhs_perms.size() == 1) {
       /// If it is op(matrix, vector)
       if (rhs1_perms[0] == lhs_perms[0] &&
-          rhs1_perms[1] == rhs2_perms[0])
-      {
+          rhs1_perms[1] == rhs2_perms[0]) {
         /// Then op is MV or SpMV
         return true;
       }
@@ -247,29 +227,27 @@ void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree, TargetDevice 
   auto allPerms = getAllPerms(op.getIndexingMaps());
   assert(allPerms.size() == 3);
 
-#ifdef COMET_DEBUG_MODE
+  #ifdef COMET_DEBUG_MODE
   comet_debug() << "\n";
   llvm::errs() << "[";
-  for (auto &perm : allPerms)
-  {
+  for (auto &perm : allPerms) {
     llvm::errs() << "[";
-    for (auto &i : perm)
-    {
+    for (auto &i : perm) {
       llvm::errs() << i << ",";
     }
     llvm::errs() << "],";
   }
   llvm::errs() << "]\n";
   comet_debug() << "";
-// comet_debug() << allPerms;
-#endif
+  // comet_debug() << allPerms;
+  #endif
+
+  /// If the operation is one of the chosen operations, then record output indices as parallel interators.
+  bool is_chosen_operations = check_chosen_operations(allPerms);
 
   auto allFormats = getAllFormats(op.getFormatsAttr(), allPerms);
   auto SemiringOp = op.getSemiringAttr();
   auto MaskingTypeAttr = op.getMaskTypeAttr();
-
-  /// If the operation is one of the chosen operations, then record output indices as parallel interators.
-  bool is_chosen_operations = check_chosen_operations(allPerms, allFormats);
 
   auto B = tree->getOrCreateTensor(rhs1_tensor, rhs1_labels, allFormats[0]);
   auto C = tree->getOrCreateTensor(rhs2_tensor, rhs2_labels, allFormats[1]);
@@ -336,8 +314,7 @@ void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree, TargetDevice 
     {
       auto &odomain = outputDomains.at(index);
       node->setOutputDomain(odomain);
-      if (is_chosen_operations)
-      {
+      if (is_chosen_operations) {
         /// If the operation is one of the chosen ones, and the index appears on the lhs,
         /// then the index has "parallel" as its iterator type.
         iteratorType->setType("parallel");
@@ -610,10 +587,10 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
 {
   unique_ptr<Index_Tree> tree;
   func::FuncOp func = getOperation();
-  // #ifdef COMET_DEBUG_MODE
-  //   comet_debug() << "Before LowerTensorAlgebraToIndexTreePass\n";
-  //   func.dump();
-  // #endif
+// #ifdef COMET_DEBUG_MODE
+//   comet_debug() << "Before LowerTensorAlgebraToIndexTreePass\n";
+//   func.dump();
+// #endif
 
   tree = Index_Tree::createTreeWithRoot();
   bool formIndexTreeDialect = false;
@@ -625,21 +602,14 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
     {
       if (isa<TensorMultOp>(&op))
       {
-<<<<<<< HEAD
         doTensorMultOp(cast<TensorMultOp>(&op), tree, device);
-=======
-#ifdef COMET_DEBUG_MODE
-        comet_debug() << "\n !!! doTensorMultOp\n";
-#endif
-        doTensorMultOp(cast<TensorMultOp>(&op), tree);
->>>>>>> 26e637e (Lower parallel IndexNode to `scf::ParallelOp`.)
         formIndexTreeDialect = true;
       }
       else if (isa<TensorElewsMultOp>(&op))
       {
-#ifdef COMET_DEBUG_MODE
+        #ifdef COMET_DEBUG_MODE
         comet_debug() << "\n !!! doElementWiseOp<TensorElewsMultOp>\n";
-#endif
+        #endif
         doElementWiseOp<TensorElewsMultOp>(cast<TensorElewsMultOp>(&op), tree);
         formIndexTreeDialect = true;
       }
@@ -648,17 +618,17 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
         /// elementwise addition and subtraction
         if (isa<TensorAddOp>(&op))
         {
-#ifdef COMET_DEBUG_MODE
+          #ifdef COMET_DEBUG_MODE
           comet_debug() << "\n !!! doElementWiseOp<TensorAddOp>\n";
-#endif
+          #endif
           doElementWiseOp<TensorAddOp>(cast<TensorAddOp>(&op), tree);
         }
 
         if (isa<TensorSubtractOp>(&op))
         {
-#ifdef COMET_DEBUG_MODE
+          #ifdef COMET_DEBUG_MODE
           comet_debug() << "\n !!! doElementWiseOp<TensorSubtractOp>\n";
-#endif
+          #endif
           doElementWiseOp<TensorSubtractOp>(cast<TensorSubtractOp>(&op), tree);
         }
         formIndexTreeDialect = true;
