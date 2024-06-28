@@ -302,17 +302,20 @@ void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree, TargetDevice 
   IndicesType rhs1_indices = tree->getIndices(rhs1_labels);
   IndicesType rhs2_indices = tree->getIndices(rhs2_labels);
   IndicesType allIndices;
+  int available_parallel_iterators = 0;  /// The number of parallel iterators (Index Nodes); architecture dependent.
 
   switch (device) 
   {
     case mlir::tensorAlgebra::CPU:
     {
       allIndices = getUnion(rhs1_indices, rhs2_indices);
+      available_parallel_iterators = 1;   /// For CPU, only allow one-level parallel for-loop (i.e., no nested parallelism).
     }
     break;
     case mlir::tensorAlgebra::GPU:
     {
       allIndices = gpuIndices(rhs1_indices, rhs2_indices);
+      available_parallel_iterators = 2;  /// TODO(zhen.peng): For GPU, it needs further consideration if the number of parallel iterators should be 2 or 3.
     }
     break;
   }
@@ -336,11 +339,12 @@ void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree, TargetDevice 
     {
       auto &odomain = outputDomains.at(index);
       node->setOutputDomain(odomain);
-      if (is_chosen_operations)
+      if (is_chosen_operations && available_parallel_iterators)
       {
         /// If the operation is one of the chosen ones, and the index appears on the lhs,
         /// then the index has "parallel" as its iterator type.
         iteratorType->setType("parallel");
+        --available_parallel_iterators;
       }
     }
     comet_debug() << "index " << index << "\n";
