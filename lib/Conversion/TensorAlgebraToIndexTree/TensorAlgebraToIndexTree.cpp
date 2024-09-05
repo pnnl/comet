@@ -44,7 +44,6 @@ using namespace mlir::tensorAlgebra;
 #undef COMET_DEBUG_MODE
 // *********** For debug purpose *********//
 
-using namespace mlir;
 
 namespace
 {
