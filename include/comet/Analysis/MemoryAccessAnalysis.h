@@ -25,8 +25,12 @@ namespace mlir
 #define GEN_PASS_DECL_MEMORYANALYSIS
 #include "comet/Analysis/Passes.h.inc"
 
-    /// pass performs additional analysis impls to the AliasAnalysis.
+    /// pass performs memory access frequency analysis
     std::unique_ptr<Pass> createMemoryAccessFrequencyAnalysisPass();
+
+    /// pass performs memory access pattern analysis.
+    std::unique_ptr<Pass> createMemoryAccessPatternAnalysisPass();
+
   } // namespace comet
 } // namespace mlir
 

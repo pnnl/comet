@@ -1,6 +1,6 @@
 add_llvm_library(COMETAnalysis
   MemoryAliasAnalysis.cpp
-  MemoryAccessPatternAnalysis.cpp
+  MemoryAccessAnalysis.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${COMET_MAIN_INCLUDE_DIR}/comet/Analysis/

@@ -71,19 +71,34 @@ def AliasAnalysisExtending : Pass<"memory-alias-extending-analysis"> {
 
 
 ///===----------------------------------------------------------------------===//
-/// Memory Access Pattern Analysis
+/// Memory Access Analysis
 ///===----------------------------------------------------------------------===//
 
-def MemoryAccessPatternAnalysis : Pass<"mem-access-frequency-analysis"> {
+def MemoryAccessFrequencyAnalysis : Pass<"mem-access-frequency-analysis"> {
+  let summary = " "
+                "";
+  let description = [{
+      "memory access frequency analysis."
+      }];
+
+  let constructor = "comet::createMemoryAccessFrequencyAnalysisPass()";
+  let dependentDialects = [
+    "memref::MemRefDialect",
+    "affine::AffineDialect",
+  ];
+}
+
+def MemoryAccessPatternAnalysis : Pass<"mem-access-pattern-analysis"> {
   let summary = " "
                 "";
   let description = [{
       "memory access pattern analysis."
       }];
 
-  let constructor = "comet::createMemoryAccessFrequencyAnalysisPass()";
+  let constructor = "comet::createMemoryAccessPatternAnalysisPass()";
   let dependentDialects = [
     "memref::MemRefDialect",
+    "affine::AffineDialect",
   ];
 }
 

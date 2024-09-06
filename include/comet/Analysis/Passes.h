@@ -25,7 +25,7 @@
 #define COMET_ANALYSIS_PASSES_H
 
 #include "comet/Analysis/MemoryAliasAnalysis.h"
-#include "comet/Analysis/MemoryAccessPatternAnalysis.h"
+#include "comet/Analysis/MemoryAccessAnalysis.h"
 
 namespace mlir
 {
