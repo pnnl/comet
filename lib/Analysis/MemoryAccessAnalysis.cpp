@@ -14,7 +14,7 @@ using namespace mlir::memref;
 using namespace mlir::affine;
 
 // *********** For debug purpose *********//
-//#define COMET_DEBUG_MODE
+#define COMET_DEBUG_MODE
 #include "comet/Utils/debug.h"
 #undef COMET_DEBUG_MODE
 // *********** For debug purpose *********//
@@ -71,7 +71,10 @@ namespace
 
 void MemoryAccessFreqeuncyAnalysisPass::incrementAccessFrequency(Value memref, int64_t count)
 {
+  comet_debug() << "before adding incrementAccessFrequency:" << accessFrequencyMap[memref] << "\n";
   accessFrequencyMap[memref] += count;
+  comet_debug() << "input incrementAccessFrequency:" << count << "\n";
+  comet_debug() << "after adding incrementAccessFrequency:" << accessFrequencyMap[memref] << "\n";
 }
 
 int64_t MemoryAccessFreqeuncyAnalysisPass::calculateConditionFactor(Operation *op, int64_t iterations)
@@ -107,6 +110,8 @@ void MemoryAccessFreqeuncyAnalysisPass::estimateAccessFrequencyWithAffineMap(Val
   // Consider the complexity of the affine map.
   int64_t accessMultiplier = 1;
   accessMultiplier = estimateAccessMultiplierFromAffineMap(affineMap);
+  comet_vdump(memref);
+  comet_debug() << "incrementAccessFrequency before calling:" << conditionFactor * accessMultiplier << " \n";
   incrementAccessFrequency(memref, conditionFactor * accessMultiplier);
 }
 
@@ -123,42 +128,63 @@ void MemoryAccessFreqeuncyAnalysisPass::runOnOperation()
 
   // Get the current function.
   func::FuncOp function = getOperation();
+  function.dump();
 
   // Traverse each operation in the function.
   function.walk([&](Operation *op)
                 {
-      if (auto affineForOp = dyn_cast<AffineForOp>(op)) {
-        // Calculate number of iterations considering the step value
-        int64_t lowerBound = affineForOp.getConstantLowerBound();
-        int64_t upperBound = affineForOp.getConstantUpperBound();
-        auto step = affineForOp.getStepAsInt();
-        int64_t iterations = (upperBound - lowerBound + step - 1) / step;
+    if (auto affineForOp = dyn_cast<AffineForOp>(op))
+    {
+      // Calculate number of iterations considering the step value
+      int64_t lowerBound = affineForOp.getConstantLowerBound();
+      int64_t upperBound = affineForOp.getConstantUpperBound();
+      auto step = affineForOp.getStepAsInt();
+      int64_t iterations = (upperBound - lowerBound + step - 1) / step;
 
         affineForOp.getBody()->walk([&](Operation *nestedOp) {
-          //AffineLoadOp and AffineStoreOp
-          if (auto loadOp = dyn_cast<AffineLoadOp>(nestedOp)) {
-            estimateAccessFrequencyWithAffineMap(loadOp.getMemRef(), nestedOp, loadOp.getAffineMap(), iterations);
-          } else if (auto storeOp = dyn_cast<AffineStoreOp>(nestedOp)) {
-            estimateAccessFrequencyWithAffineMap(storeOp.getMemRef(), nestedOp, storeOp.getAffineMap(), iterations);
-          
-          //LoadOp and StoreOp
-          } else if (auto loadOp = dyn_cast<memref::LoadOp>(nestedOp)) {
-            estimateAccessFrequency(loadOp.getMemRef(), nestedOp, iterations);
-          } else if (auto storeOp = dyn_cast<memref::StoreOp>(nestedOp)) {
-            estimateAccessFrequency(storeOp.getMemRef(), nestedOp, iterations);
-          }
-        });
-      } else {
-        if (auto loadOp = dyn_cast<AffineLoadOp>(op)) {
-          incrementAccessFrequency(loadOp.getMemRef(), 1);
-        } else if (auto storeOp = dyn_cast<AffineStoreOp>(op)) {
-          incrementAccessFrequency(storeOp.getMemRef(), 1);
-        } else if (auto loadOp = dyn_cast<memref::LoadOp>(op)) {
-          incrementAccessFrequency(loadOp.getMemRef(), 1);
-        } else if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
-          incrementAccessFrequency(storeOp.getMemRef(), 1);
+        // AffineLoadOp and AffineStoreOp
+        if (auto loadOp = dyn_cast<AffineLoadOp>(nestedOp))
+        {
+          comet_debug() << "Inside loop body\n";
+          comet_vdump(loadOp);
+          estimateAccessFrequencyWithAffineMap(loadOp.getMemRef(), nestedOp, loadOp.getAffineMap(), iterations);
         }
-      } });
+        else if (auto storeOp = dyn_cast<AffineStoreOp>(nestedOp))
+        {
+          estimateAccessFrequencyWithAffineMap(storeOp.getMemRef(), nestedOp, storeOp.getAffineMap(), iterations);
+          // LoadOp and StoreOp
+        }
+        else if (auto loadOp = dyn_cast<memref::LoadOp>(nestedOp))
+        {
+          estimateAccessFrequency(loadOp.getMemRef(), nestedOp, iterations);
+        }
+        else if (auto storeOp = dyn_cast<memref::StoreOp>(nestedOp))
+        {
+          estimateAccessFrequency(storeOp.getMemRef(), nestedOp, iterations);
+        }
+        });
+    }
+    else
+    {
+      if (auto loadOp = dyn_cast<AffineLoadOp>(op))
+      {
+        comet_debug() << "Outside loop body\n";
+        comet_vdump(loadOp);
+        incrementAccessFrequency(loadOp.getMemRef(), 1);
+      }
+      else if (auto storeOp = dyn_cast<AffineStoreOp>(op))
+      {
+        incrementAccessFrequency(storeOp.getMemRef(), 1);
+      }
+      else if (auto loadOp = dyn_cast<memref::LoadOp>(op))
+      {
+        incrementAccessFrequency(loadOp.getMemRef(), 1);
+      }
+      else if (auto storeOp = dyn_cast<memref::StoreOp>(op))
+      {
+        incrementAccessFrequency(storeOp.getMemRef(), 1);
+      }
+    } });
 
   // Print the access frequency of each memory location.
   for (auto &entry : accessFrequencyMap)
@@ -173,122 +199,48 @@ void MemoryAccessFreqeuncyAnalysisPass::runOnOperation()
 /// Memory Access Pattern Analysis (sequential or random)
 ///===----------------------------------------------------------------------===//
 
-// Simple heuristic to determine if the affine map represents sequential access.
-// bool MemoryAccessPatternAnalysisPass::isSequentialAccess(AffineMap affineMap)
-// {
-//   if (affineMap.getNumResults() != 1)
-//   {
-//     return false; // Not a single-dimensional access.
-//   }
-
-//   auto resultExpr = affineMap.getResult(0);
-//   if (auto dimExpr = llvm::dyn_cast<AffineDimExpr>(resultExpr))
-//   {
-//     // Simple case: access is directly based on the loop index.
-//     return true;
-//   }
-//   else if (auto binExpr = llvm::dyn_cast<AffineBinaryOpExpr>(resultExpr))
-//   {
-//     // Handle simple affine expressions like `2 * i + 1`.
-//     if (binExpr.getKind() == AffineExprKind::Add || binExpr.getKind() == AffineExprKind::Mul)
-//     {
-//       return llvm::isa<AffineDimExpr>(binExpr.getLHS()) || llvm::isa<AffineDimExpr>(binExpr.getRHS());
-//     }
-//   }
-
-//   return false;
-// }
-
-// Simple heuristic to determine if indices represent sequential access.
-// Heuristics for Sequential Access: If the index is an affine function of the loop iterator
-// with a stride of 1 or a constant stride, it's sequential. If the index depends on some complex non-affine
-// expression or varies non-uniformly, it's considered random.
-// bool MemoryAccessPatternAnalysisPass::isSequentialAccess(OperandRange indices)
-// {
-//   if (indices.size() != 1)
-//   {
-//     return false; // Not a single-dimensional access.
-//   }
-
-//   if (auto defOp = indices[0].getDefiningOp())
-//   {
-//     if (isa<AffineApplyOp>(defOp))
-//     {
-//       // Further analysis can be added here to analyze complex affine expressions.
-//       return true; // Assume affine apply represents sequential access.
-//     }
-//   }
-
-//   return false;
-// }
-
-// Determine if the affine expression represents a sequential access pattern.
-// bool MemoryAccessPatternAnalysisPass::isSequentialAffineExpr(AffineExpr expr) {
-//   if (auto dimExpr = llvm::dyn_cast<AffineDimExpr>(expr)) {
-//     comet_debug() << "Direct mapping from loop index to memory index\n";
-//     return true; // Direct mapping from loop index to memory index.
-//   }
-
-//   if (auto constExpr = expr.dyn_cast<AffineConstantExpr>()) {
-//     comet_debug() << "Constant expressions are sequential\n";
-//     return true; // Constant expressions are sequential.
-//   }
-
-//   if (auto binExpr = expr.dyn_cast<AffineBinaryOpExpr>()) {
-//     // Check for add, mul with constants and loop indices.
-//     if (binExpr.getKind() == AffineExprKind::Add) {
-//       return isSequentialAffineExpr(binExpr.getLHS()) && isSequentialAffineExpr(binExpr.getRHS());
-//     }
-//     if (binExpr.getKind() == AffineExprKind::Mul) {
-//       if (auto lhsConst = binExpr.getLHS().dyn_cast<AffineConstantExpr>()) {
-//         return lhsConst.getValue() == 1 && isSequentialAffineExpr(binExpr.getRHS());
-//       }
-//       if (auto rhsConst = binExpr.getRHS().dyn_cast<AffineConstantExpr>()) {
-//         return rhsConst.getValue() == 1 && isSequentialAffineExpr(binExpr.getLHS());
-//       }
-//     }
-//   }
-
-//   return false; // If none of the conditions match, consider it random.
-// }
-
 // Recursive helper function to check if an affine expression is simple.
 bool MemoryAccessPatternAnalysisPass::isSimpleAffineExpr(AffineExpr expr)
 {
   comet_vdump(expr);
-  if (auto dimExpr = expr.dyn_cast<AffineDimExpr>()) {
+  if (auto dimExpr = expr.dyn_cast<AffineDimExpr>())
+  {
     comet_debug() << "Direct access to a loop index can be sequential";
-      return true; // Direct loop index access is simple.
-    }
+    return true; // Direct loop index access is simple.
+  }
 
-    if (auto constExpr = expr.dyn_cast<AffineConstantExpr>()) {
-      return true; // Constant expressions are simple.
-    }
+  if (auto constExpr = expr.dyn_cast<AffineConstantExpr>())
+  {
+    return true; // Constant expressions are simple.
+  }
 
-    // Handle simple addition or multiplication.
-    if (auto binExpr = expr.dyn_cast<AffineBinaryOpExpr>()) {
-      switch (binExpr.getKind()) {
-        case AffineExprKind::Add:
-          // Both sides must be simple.
-          return isSimpleAffineExpr(binExpr.getLHS()) && isSimpleAffineExpr(binExpr.getRHS());
-        case AffineExprKind::Mul:
-          // Allow multiplication only if one side is a constant.
-          if (binExpr.getLHS().isa<AffineConstantExpr>() || binExpr.getRHS().isa<AffineConstantExpr>()) {
-            return isSimpleAffineExpr(binExpr.getLHS()) || isSimpleAffineExpr(binExpr.getRHS());
-          }
-          return false; // Non-constant multiplication is considered complex.
-        case AffineExprKind::Mod:
-        case AffineExprKind::CeilDiv:
-        case AffineExprKind::FloorDiv:
-          // Modulo and division are always considered complex.
-          return false;
-        default:
-          break;
+  // Handle simple addition or multiplication.
+  if (auto binExpr = expr.dyn_cast<AffineBinaryOpExpr>())
+  {
+    switch (binExpr.getKind())
+    {
+    case AffineExprKind::Add:
+      // Both sides must be simple.
+      return isSimpleAffineExpr(binExpr.getLHS()) && isSimpleAffineExpr(binExpr.getRHS());
+    case AffineExprKind::Mul:
+      // Allow multiplication only if one side is a constant.
+      if (binExpr.getLHS().isa<AffineConstantExpr>() || binExpr.getRHS().isa<AffineConstantExpr>())
+      {
+        return isSimpleAffineExpr(binExpr.getLHS()) || isSimpleAffineExpr(binExpr.getRHS());
       }
+      return false; // Non-constant multiplication is considered complex.
+    case AffineExprKind::Mod:
+    case AffineExprKind::CeilDiv:
+    case AffineExprKind::FloorDiv:
+      // Modulo and division are always considered complex.
+      return false;
+    default:
+      break;
     }
+  }
 
-    // Any other case (mod, div, etc.) is considered complex and thus random.
-    return false;
+  // Any other case (mod, div, etc.) is considered complex and thus random.
+  return false;
 }
 
 // Check if an access pattern is sequential.
