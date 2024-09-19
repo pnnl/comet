@@ -361,7 +361,7 @@ void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree, TargetDevice 
     }
     break;
   }
-  tree->setSizeOfIteratorTypes(allIndices.size());  // Set the total number of iterators
+  tree->setSizeOfIteratorTypesByIndices(allIndices);  // Set the total number of iterators
 
   auto lhsIndices = A->getIndices();
 
@@ -451,7 +451,7 @@ void doElementWiseOp(T op, unique_ptr<Index_Tree> &tree)
 
   /// RHS and LHS indices must be the same for elementwise multiplication
   IndicesType allIndices = tree->getIndices(rhs1_labels);
-  tree->setSizeOfIteratorTypes(allIndices.size()); // Set the total number of iterators
+  tree->setSizeOfIteratorTypesByIndices(allIndices); // Set the total number of iterators
 
   auto lhsIndices = A->getIndices();
   TreeNode *parent = tree->getRoot();

@@ -250,6 +250,14 @@ vector<mlir::Operation *> Index_Tree::getContainingTAOps()
   return ops;
 }
 
+void Index_Tree::setSizeOfIteratorTypesByIndices(IndicesType allIndices)
+{
+  for (int index : allIndices)
+  {
+    iteratorTypes[index] = nullptr;
+  }
+}
+
 std::unordered_set<std::string> IteratorType::supported_types = {"default",
                                                                  "serial",
                                                                  "parallel",
@@ -257,9 +265,12 @@ std::unordered_set<std::string> IteratorType::supported_types = {"default",
                                                                  "reduction",
                                                                  "window"};
 void IteratorType::setType(std::string t) {
-  if (supported_types.find(t) != supported_types.end()) {
+  if (supported_types.find(t) != supported_types.end())
+  {
     type = t;
-  } else {
+  }
+  else
+  {
     llvm::errs() << "Unsupported iterator type " + t + "\n";
   }
 }
