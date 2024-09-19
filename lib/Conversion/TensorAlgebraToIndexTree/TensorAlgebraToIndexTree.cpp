@@ -64,7 +64,7 @@ namespace
 } /// namespace
 
 /**
- * @brief Check if the given allPerms is from one of the chosen operations.
+ * @brief Check if the given allPerms and allFormats are from one of the chosen operations.
  * Current algorithm is to check the pattern of the allPerms to see if it is tensor contraction.
  * Current chosen operations includes:
  * dense matrix-matrix multiplication (MM),
@@ -72,12 +72,13 @@ namespace
  * sparse matrix-dense matrix multiplication (SpMM),
  * sparse matrix-dense vector multiplication (SpMV)
  *
- * @param allPerms allPerms from the operation. For example, [[d0, d1], [d1, d2], [d0, d2]]
+ * @param allPerms allPerms from the operation. For example, [[d0, d1], [d1, d2], [d0, d2]]. RHS is allPerms[0,1], LHS is allPerms[2].
+ * @param allFormats allFormats from the operation; the same size with allPerms. For example, [["D", "D"], ["D", "CU"], ["D", "D"]]. RHS is allFormats[0,1], LHS is allFormats[2].
  * @return true : it is one of the chosen operations.
  * @return false : it is not.
  */
-bool check_chosen_operations(const std::vector<std::vector<int64_t>> &allPerms,
-                             const std::vector<std::vector<std::string>> &allFormats)
+bool checkChosenDenseMixedOperations(const std::vector<std::vector<int64_t>> &allPerms,
+                                     const std::vector<std::vector<std::string>> &allFormats)
 {
   if (allPerms.size() != 3)
   {
@@ -121,6 +122,46 @@ bool check_chosen_operations(const std::vector<std::vector<int64_t>> &allPerms,
         /// Then op is MV or SpMV
         return true;
       }
+    }
+  }
+
+  return false;
+}
+
+
+/**
+ * @brief Check if the given allPerms and allFormats are from SpGEMM operation.
+ * @param allPerms allPerms from the operation. For example, [[d0, d1], [d1, d2], [d0, d2]]. RHS is allPerms[0,1], LHS is allPerms[2].
+ * @param allFormats allFormats from the operation; the same size with allPerms. For example, [["D", "CU"], ["D", "CU"], ["D", "CU"]]. RHS is allFormats[0,1], LHS is allFormats[2].
+ * @return true : it is one of the chosen operations.
+ * @return false : it is not.
+ */
+bool checkChosenSpGEMMOperation(const std::vector<std::vector<int64_t>> &allPerms,
+                                const std::vector<std::vector<std::string>> &allFormats)
+{
+  if (allPerms.size() != 3)
+  {
+    return false;
+  }
+
+  /// The output tensor should be sparse.
+  auto lhs_formats = allFormats[2];
+  if (!(lhs_formats[0] == "D" && lhs_formats[1] == "CU")) {
+    return false;
+  }
+
+  /// do lhs = op(rhs1, rhs2)
+  const std::vector<int64_t> &rhs1_perms = allPerms[0];
+  const std::vector<int64_t> &rhs2_perms = allPerms[1];
+  const std::vector<int64_t> &lhs_perms = allPerms[2];
+
+  if (rhs1_perms.size() == 2 && rhs2_perms.size() == 2 && lhs_perms.size() == 2) {
+    /// SpGEMM is C[i,j] = A[i,k] * B[k,j]
+    if (rhs1_perms[0] == lhs_perms[0] &&
+        rhs1_perms[1] == rhs2_perms[0] &&
+        rhs2_perms[1] == lhs_perms[1])
+    {
+      return true;
     }
   }
 
@@ -269,7 +310,8 @@ void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree, TargetDevice 
   auto MaskingTypeAttr = op.getMaskTypeAttr();
 
   /// If the operation is one of the chosen operations, then record output indices as parallel interators.
-  bool is_chosen_operations = check_chosen_operations(allPerms, allFormats);
+  bool is_chosen_dense_mixed_operations = checkChosenDenseMixedOperations(allPerms, allFormats);
+  bool is_chosen_spgemm_operation = checkChosenSpGEMMOperation(allPerms, allFormats);
 
   auto B = tree->getOrCreateTensor(rhs1_tensor, rhs1_labels, allFormats[0]);
   auto C = tree->getOrCreateTensor(rhs2_tensor, rhs2_labels, allFormats[1]);
@@ -339,11 +381,18 @@ void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree, TargetDevice 
     {
       auto &odomain = outputDomains.at(index);
       node->setOutputDomain(odomain);
-      if (is_chosen_operations && available_parallel_iterators)
+      if (is_chosen_dense_mixed_operations && available_parallel_iterators)
       {
         /// If the operation is one of the chosen ones, and the index appears on the lhs,
         /// then the index has "parallel" as its iterator type.
         iteratorType->setType("parallel");
+        --available_parallel_iterators;
+      }
+      else if (is_chosen_spgemm_operation && available_parallel_iterators)
+      {
+        /// If the operation is SpGEMM,
+        /// then the index has "omp.parallel" as its iterator type.
+        iteratorType->setType("omp.parallel");
         --available_parallel_iterators;
       }
     }
@@ -634,9 +683,6 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
       }
       else if (isa<TensorElewsMultOp>(&op))
       {
-#ifdef COMET_DEBUG_MODE
-        comet_debug() << "\n !!! doElementWiseOp<TensorElewsMultOp>\n";
-#endif
         doElementWiseOp<TensorElewsMultOp>(cast<TensorElewsMultOp>(&op), tree);
         formIndexTreeDialect = true;
       }
@@ -645,17 +691,11 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
         /// elementwise addition and subtraction
         if (isa<TensorAddOp>(&op))
         {
-#ifdef COMET_DEBUG_MODE
-          comet_debug() << "\n !!! doElementWiseOp<TensorAddOp>\n";
-#endif
           doElementWiseOp<TensorAddOp>(cast<TensorAddOp>(&op), tree);
         }
 
         if (isa<TensorSubtractOp>(&op))
         {
-#ifdef COMET_DEBUG_MODE
-          comet_debug() << "\n !!! doElementWiseOp<TensorSubtractOp>\n";
-#endif
           doElementWiseOp<TensorSubtractOp>(cast<TensorSubtractOp>(&op), tree);
         }
         formIndexTreeDialect = true;

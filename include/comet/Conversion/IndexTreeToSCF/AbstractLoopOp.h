@@ -33,6 +33,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/IR/Dominance.h"
@@ -58,6 +59,8 @@ private:
   mlir::Operation *op = nullptr;
   std::string iteratorType = "default";
   static std::unordered_set<std::string> supported_types;
+
+  omp::YieldOp omp_wsloop_yield_op = nullptr;  /// `omp.yield` op for `omp.wsloop`, just in case.
 
 public:
   AbstractLoopOp() = default;
@@ -93,6 +96,8 @@ public:
 
   void setOp(scf::ParallelOp parallelOp, std::string iterator_type);
 
+  void setOp(omp::WsLoopOp parallelOp, std::string iterator_type);
+
   void setLowerBound(mlir::Value &lowerBound);
 
   void setUpperBound(mlir::Value &upperBound);
@@ -108,6 +113,11 @@ public:
   }
 
   mlir::Block *getBody();
+
+  Operation *getDefiningOp()
+  {
+    return op;
+  }
 
   mlir::Value getInductionVar();
 

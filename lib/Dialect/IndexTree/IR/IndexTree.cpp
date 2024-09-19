@@ -253,6 +253,7 @@ vector<mlir::Operation *> Index_Tree::getContainingTAOps()
 std::unordered_set<std::string> IteratorType::supported_types = {"default",
                                                                  "serial",
                                                                  "parallel",
+                                                                 "omp.parallel",
                                                                  "reduction",
                                                                  "window"};
 void IteratorType::setType(std::string t) {

@@ -37,6 +37,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/IR/Dominance.h"
@@ -67,7 +68,8 @@ using llvm::StringRef;
 #define DEBUG_TYPE "lowering-it-to-scf"
 
 // *********** For debug purpose *********//
-// #define COMET_DEBUG_MODE
+//#define COMET_DEBUG_MODE
+//#define DEBUG_MODE_LowerIndexTreeToSCFPass
 #include "comet/Utils/debug.h"
 #undef COMET_DEBUG_MODE
 // *********** For debug purpose *********//
@@ -294,10 +296,19 @@ namespace
 
     Value mtxC_rowptr_size = nullptr; /// rowptr array's size, which is number of columns plus one (num_col + 1).
 
-    Value row_offset = nullptr; /// In Numeric Phase, row_offset is the insertion location in the C_col and C_val.
+    Value row_offset_alloc = nullptr; /// In Symbolic Phase, row_offset is the current row length, i.e., W_id_list_size. row_offset should be thread-private, and initialized as `row_offset  = 0` for each row in the symbolic phase.
 
     Value mtxC = nullptr; /// The sparse tensor
                           /// It is %55 below.
+
+    bool has_omp_parallel = false;  /// If to use omp.parallel
+                                     /// Currently, if has_symbolic_phase == true; then has_omp_parallel = true;
+
+    omp::ParallelOp omp_parallel_op = nullptr;  /// The omp.parallel operation. Needed for insertation location.
+
+    omp::TerminatorOp omp_terminator_op = nullptr; /// the omp.terminate operation, which indicate the very end of omp.parallel operation.
+
+    Value mark_array_alloc = nullptr;  /// the mark_array in symbolic phase to mark which columns have been visited in the current row. This should be thread-private (inside omp.parallel) but outside the outermost parallel for-loop.
   };
 
   /// ----------------- ///
@@ -309,7 +320,138 @@ namespace
     Value ws_bitmap_valueAccessIdx = nullptr; /// value access index for the workspace bitmap.
 
     Value mask_array = nullptr; /// the intermediate dense vector for a row of the mask.
+
+    Value W_data_alloc = nullptr;  /// Workspace allocation operation
+
+    Value row_offset_alloc = nullptr; /// In Numeric Phase, row_offset is the current row length and insertion location for `C.col_id[row_offset++] = col_id; C.values[row_offset++] = value`, i.e. W_id_list_size. row_offset should be thread-private, and initialized as ` row_offset = C.rowptr[row_id]` for each row in the numeric phase.
+
+    bool has_omp_parallel = false;  /// If to use omp.parallel
+                                     /// Currently, if SymbolicInfo::has_symbolic_phase == true; then has_omp_parallel = true;
+
+    omp::ParallelOp omp_parallel_op = nullptr;  /// The omp.parallel operation. Needed for insertation location.
+
+    omp::TerminatorOp omp_terminator_op = nullptr; /// the omp.terminate operation, which indicate the very end of omp.parallel operation.
   };
+
+  /// ----------------- ///
+  /// Generate omp.parallel operations for symbolic phase and numeric phase. Also allocate the thread-private row_offset inside omp.parallel.
+  /// ----------------- ///
+  void genOmpParallelSymbolicAndNumeric(OpBuilder &builder,
+                                        indexTree::IndexTreeOp &rootOp,
+                                        SymbolicInfo &symbolicInfo, /*output*/
+                                        NumericInfo &numericInfo /*output*/)
+  {
+    Location loc = rootOp.getLoc();
+
+    /// Generate symbolic omp.parallel
+    /// Ref: llvm/mlir/lib/Conversion/SCFToOpenMP/SCFToOpenMP.cpp
+    auto omp_parallel_symbolic = builder.create<omp::ParallelOp>(loc);
+    {
+      OpBuilder::InsertionGuard guard(builder);  /// RAII guard to reset the insertion point of the builder when destroyed.
+      builder.createBlock(&omp_parallel_symbolic.getRegion());  /// NOTE: this changed the insertion point automatically.
+
+      /// Allocate row_offset
+      MemRefType memTy_alloc_rowOffset = MemRefType::get({1}, builder.getIndexType());
+      symbolicInfo.row_offset_alloc = builder.create<memref::AllocOp>(loc, memTy_alloc_rowOffset);
+      /// Generate omp.terminator
+      symbolicInfo.omp_terminator_op = builder.create<omp::TerminatorOp>(loc);
+    }
+    symbolicInfo.omp_parallel_op = omp_parallel_symbolic;
+
+    /// Generate numeric omp.parallel
+    auto omp_parallel_numeric = builder.create<omp::ParallelOp>(loc);
+    {
+      OpBuilder::InsertionGuard guard(builder);  /// RAII guard to reset the insertion point of the builder when destroyed.
+      builder.createBlock(&omp_parallel_numeric.getRegion());  /// NOTE: this changed the insertion point automatically.
+
+      /// Allocate row_offset
+      MemRefType memTy_alloc_rowOffset = MemRefType::get({1}, builder.getIndexType());
+      numericInfo.row_offset_alloc = builder.create<memref::AllocOp>(loc, memTy_alloc_rowOffset);
+      /// Generate omp.terminator
+      numericInfo.omp_terminator_op = builder.create<omp::TerminatorOp>(loc);
+    }
+    numericInfo.omp_parallel_op = omp_parallel_numeric;
+
+    // {/// Example: how to insert operations into an omp.parallel region.
+    //   OpBuilder::InsertionGuard guard(builder);
+    //   builder.setInsertionPointToStart(&omp_parallel_symbolic.getRegion().front());
+    //   builder.create<arith::ConstantOp>(loc, builder.getF64Type(), builder.getF64FloatAttr(1));
+    // }
+
+    comet_vdump(omp_parallel_symbolic);
+    comet_vdump(omp_parallel_numeric);
+  }
+
+  /// Initialize Symbolic row_offset = 0 for each row
+  void genInitSymbolicRowOffset(OpBuilder &builder,
+                                Location &loc,
+                                Value const_init,
+                                SymbolicInfo &symbolicInfo)
+  {
+    auto const_index_0 = builder.create<ConstantIndexOp>(loc, 0);
+    builder.create<memref::StoreOp>(loc, const_init, symbolicInfo.row_offset_alloc, ValueRange{const_index_0});
+  }
+
+  /// Initialize Numeric row_offset = C.rowptr[row_id] for each row.
+  void genInitNumericRowOffset(OpBuilder &builder,
+                               Location &loc,
+                               int lhs_loc,
+                               std::vector<AbstractLoopOp> &nested_forops,
+                               SymbolicInfo &symbolicInfo,
+                               NumericInfo &numericInfo)
+  {
+    Value accessIdx = nested_forops[0].getInductionVar();
+    Value rowptr = builder.create<memref::LoadOp>(loc, symbolicInfo.mtxC_rowptr, ValueRange{accessIdx});
+    auto const_index_0 = builder.create<ConstantIndexOp>(loc, 0);
+    builder.create<memref::StoreOp>(loc, rowptr, numericInfo.row_offset_alloc, ValueRange{const_index_0});
+  }
+
+  /// Generate the Symbolic Phase mark_array which pairs with the
+  /// `mark` variable to mark which columns have been visited for each row.
+  /// mark_array should be thread-private (inside omp.parallel, but before the outermost parallel for-loop).
+  void genSymbolicMarkArray(OpBuilder &builder,
+                            Location &loc,
+                            AbstractLoopOp &outermost_forLoop,
+                            SymbolicInfo &symbolicInfo /*output*/)
+  {
+    OpBuilder::InsertionGuard guard(builder);  /// RAII guard to reset the insertion point of the builder when destroyed.
+    builder.setInsertionPoint(outermost_forLoop);
+
+    /// Load the number of columns of C
+    Value &num_cols = symbolicInfo.mtxC_num_cols;
+    comet_vdump(num_cols);
+
+    /// Allocate the mark_array
+    MemRefType memTy_dynamic_index = MemRefType::get({ShapedType::kDynamic}, builder.getIndexType());
+    Value mark_array = builder.create<memref::AllocOp>(loc,
+                                                      memTy_dynamic_index,
+                                                      ValueRange(num_cols),
+                                                      builder.getI64IntegerAttr(8) /* alighment bytes */);
+
+    /// Set the symbolic mark_array
+    symbolicInfo.mark_array_alloc = mark_array;
+    comet_vdump(mark_array);
+
+    /// Initialize mark_array to all zeros
+    Value const_index_0 = builder.create<ConstantOp>(loc, builder.getIndexType(), builder.getIndexAttr(0));
+    Value const_index_1 = builder.create<ConstantOp>(loc, builder.getIndexType(), builder.getIndexAttr(1));
+    scf::ForOp init_forLoop = builder.create<scf::ForOp>(loc,
+                                                         const_index_0 /* lowerBound */,
+                                                         num_cols /* upperBound */,
+                                                         const_index_1 /* step */);
+    builder.setInsertionPointToStart(init_forLoop.getBody());
+    Value i_idx = init_forLoop.getInductionVar();
+    builder.create<memref::StoreOp>(loc,
+                                    const_index_0,
+                                    mark_array,
+                                    ValueRange{i_idx});
+    comet_vdump(init_forLoop);
+
+    /// Deallocate mark_array at the end of omp.parallel
+    builder.setInsertionPoint(symbolicInfo.omp_terminator_op);
+    builder.create<memref::DeallocOp>(loc, mark_array);
+  }
+
 
   /// ----------------- ///
   /// Remove an operantion's user who is a memref.store
@@ -568,7 +710,8 @@ namespace
   /// In genForOps, set Insertion Point for numeric loops.
   void setInsertionPointInNumericLoops(OpBuilder &builder,
                                        std::vector<OpsTree *> &ancestorsOps,
-                                       OpsTree *opstree)
+                                       OpsTree *opstree,
+                                       NumericInfo &numericInfo)
   {
     /// If parent is for loop, insert into the body, How to get end of body?
     if (ancestorsOps.size() > 0)
@@ -624,6 +767,11 @@ namespace
         }
       }
       comet_debug() << " reset the insertion point\n";
+    }
+    else if (numericInfo.has_omp_parallel)
+    {
+//      builder.setInsertionPointToStart(&numericInfo.omp_parallel_op.getRegion().front());
+      builder.setInsertionPointAfterValue(numericInfo.row_offset_alloc);
     }
   }
 
@@ -932,7 +1080,8 @@ namespace
   /// In genForOps, set Insertion Point for symbolic loops.
   void setInsertionPointInSymbolicLoops(OpBuilder &builder,
                                         std::vector<OpsTree *> &ancestorsOps,
-                                        OpsTree *opstree)
+                                        OpsTree *opstree,
+                                        SymbolicInfo &symbolicInfo)
   {
     /// If parent is for loop, insert into the body, How to get end of body?
     if (ancestorsOps.size() > 0)
@@ -994,6 +1143,11 @@ namespace
         }
       }
       comet_debug() << " reset the insertion point\n";
+    }
+    else if (symbolicInfo.has_omp_parallel)
+    {
+//      builder.setInsertionPointToStart(&symbolicInfo.omp_parallel_op.getRegion().front());
+      builder.setInsertionPointAfterValue(symbolicInfo.row_offset_alloc);
     }
   }
 
@@ -1059,10 +1213,11 @@ namespace
   void genForOps(std::vector<Value> &tensors,
                  std::vector<unsigned int> &ids,
                  std::vector<std::string> &formats,
-                 indexTree::IndexTreeOp rootOp,
+                 indexTree::IndexTreeOp &rootOp,
                  OpBuilder &builder,
                  OpsTree *opstree,
                  SymbolicInfo &symbolicInfo,
+                 NumericInfo &numericInfo,
                  llvm::StringRef &iteratorType)
   {
     comet_debug() << " genForOps indexTreeOp\n";
@@ -1092,7 +1247,8 @@ namespace
     /// ----------------- ///
     setInsertionPointInNumericLoops(builder,
                                     ancestorsOps,
-                                    opstree);
+                                    opstree,
+                                    numericInfo);
 
     for (unsigned int i = 0; i < tensors.size(); i++)
     {
@@ -1119,7 +1275,8 @@ namespace
           /// Set the insertions point
           setInsertionPointInSymbolicLoops(builder,
                                            ancestorsOps,
-                                           opstree);
+                                           opstree,
+                                           symbolicInfo);
 
           AbstractLoopOp forLoop;
           Value accessIndex;
@@ -1167,7 +1324,8 @@ namespace
           /// Set the insertions point
           setInsertionPointInSymbolicLoops(builder,
                                            ancestorsOps,
-                                           opstree);
+                                           opstree,
+                                           symbolicInfo);
 
           AbstractLoopOp forLoop;
           Value accessIndex;
@@ -1531,9 +1689,11 @@ namespace
   {
     Value &ws_bitmap = numericInfo.ws_bitmap;
     Value &ws_bitmap_valueAccessIdx = numericInfo.ws_bitmap_valueAccessIdx;
-    Value &W_id_list_size = tensors_lhs_Allocs[3][0];
+//    Value &W_id_list_size = tensors_lhs_Allocs[3][0];
+    Value &W_id_list_size = numericInfo.row_offset_alloc;
     Value &mtxC_col = symbolicInfo.mtxC_col;
-    Value &W_data = main_tensors_all_Allocs[lhs_loc].back();
+//    Value &W_data = main_tensors_all_Allocs[lhs_loc].back();
+    Value &W_data = numericInfo.W_data_alloc;
     Value &W_data_valueAccessIdx = ws_bitmap_valueAccessIdx;
 
     builder.setInsertionPointToStart(&if_notAlreadySet.getThenRegion().front());
@@ -1608,10 +1768,12 @@ namespace
                                             llvm::StringRef &semiringFirst,
                                             llvm::StringRef &semiringSecond,
                                             std::vector<std::vector<Value>> &main_tensors_all_Allocs,
-                                            std::vector<std::vector<Value>> &allValueAccessIdx)
+                                            std::vector<std::vector<Value>> &allValueAccessIdx,
+                                            NumericInfo &numericInfo)
   {
 
-    Value &W_data = main_tensors_all_Allocs[lhs_loc].back();
+//    Value &W_data = main_tensors_all_Allocs[lhs_loc].back();
+    Value &W_data = numericInfo.W_data_alloc;
     Value &W_data_valueAccessIdx = allValueAccessIdx[lhs_loc][0];
 
     builder.setInsertionPointToStart(&if_notAlreadySet.getElseRegion().front());
@@ -1619,8 +1781,16 @@ namespace
     std::vector<Value> allLoadsElse(main_tensor_nums);
     for (auto m = 0; m < main_tensor_nums; m++)
     {
-      Value s = builder.create<memref::LoadOp>(loc, main_tensors_all_Allocs[m][main_tensors_all_Allocs[m].size() - 1], allValueAccessIdx[m]);
-      allLoadsElse[m] = s;
+      if (m == lhs_loc)  /// W_data
+      {
+        Value s = builder.create<memref::LoadOp>(loc, W_data, allValueAccessIdx[m]);
+        allLoadsElse[m] = s;
+      }
+      else   /// Not W_data
+      {
+        Value s = builder.create<memref::LoadOp>(loc, main_tensors_all_Allocs[m].back(), allValueAccessIdx[m]);
+        allLoadsElse[m] = s;
+      }
       comet_vdump(s);
     }
     comet_debug() << " allLoadsElse.size(): " << allLoadsElse.size() << "\n";
@@ -1638,15 +1808,19 @@ namespace
   /// It should be deprecated in the future, as the bitmap would be lowered from the Index Tree dialect.
   void genNumericBitmap(OpBuilder &builder,
                         Location &loc,
-                        AbstractLoopOp &symbolic_outermost_forLoop,
+//                        AbstractLoopOp &symbolic_outermost_forLoop,
+                        AbstractLoopOp &numeric_outermost_forLoop,
                         SymbolicInfo &symbolicInfo,
-                        Value &bitmap_alloc)
+                        NumericInfo &numericInfo,
+                        Value &bitmap_alloc /* output */)
   {
     /// Store the insertion point
     auto last_insertion_point = builder.saveInsertionPoint();
 
-    /// Jump Insertion Point to the front of the 2nd outermost for-loop
-    builder.setInsertionPoint(symbolic_outermost_forLoop);
+    /// Jump Insertion Point to the front of the outermost for-loop
+//    builder.setInsertionPoint(symbolic_outermost_forLoop);
+    builder.setInsertionPoint(numeric_outermost_forLoop);
+    comet_vdump(numeric_outermost_forLoop);
 
     Value const_index_0 = builder.create<ConstantIndexOp>(loc, 0);
     Value const_index_1 = builder.create<ConstantIndexOp>(loc, 1);
@@ -1668,6 +1842,11 @@ namespace
                                     const_i1_0,
                                     bitmap_alloc,
                                     ValueRange{i_idx});
+
+    /// Deallocate bitmap at the end of omp.parallel
+    builder.setInsertionPoint(numericInfo.omp_terminator_op);
+    builder.create<memref::DeallocOp>(loc, bitmap_alloc);
+
     {
       comet_vdump(bitmap_alloc);
       comet_vdump(init_forLoop);
@@ -1676,6 +1855,36 @@ namespace
     /// Restore the insertion point
     builder.restoreInsertionPoint(last_insertion_point);
   }
+
+
+  /// Generate the numeric Workspace (W_data, a dense vector)
+  void genNumericWorkspace(OpBuilder &builder,
+                           Location &loc,
+                           AbstractLoopOp &numeric_outermost_forLoop,
+                           SymbolicInfo &symbolicInfo,
+                           NumericInfo &numericInfo /* output */)
+  {
+    OpBuilder::InsertionGuard guard(builder);  /// RAII guard to reset the insertion point of the builder when destroyed.
+    builder.setInsertionPoint(numeric_outermost_forLoop);
+
+    Value &mtxC_dim2_size = symbolicInfo.mtxC_num_cols;
+
+    MemRefType memTy_dynamic_f64 = MemRefType::get({ShapedType::kDynamic}, builder.getF64Type());
+    auto W_data_alloc = builder.create<memref::AllocOp>(loc,
+                                                        memTy_dynamic_f64,
+                                                        ValueRange{mtxC_dim2_size},
+                                                        builder.getI64IntegerAttr(8) /* alignment bytes */);
+    numericInfo.W_data_alloc = W_data_alloc;
+
+    /// Deallocate W_data_alloc at the end of omp.parallel
+    builder.setInsertionPoint(numericInfo.omp_terminator_op);
+    builder.create<memref::DeallocOp>(loc, W_data_alloc);
+
+    {
+      comet_vdump(W_data_alloc);
+    }
+  }
+
 
   /// Generate numeric mask-array before the numeric outermost for-loop.
   /// Please don't confuse with mark-array.
@@ -1872,12 +2081,23 @@ namespace
         Value bitmap_alloc;
         genNumericBitmap(builder,
                          loc,
-                         symbolic_nested_forops.back(),
+//                         symbolic_nested_forops.back(),
+                         /*numeric_outermost_forLoop=*/ forLoops.back(),
                          symbolicInfo,
-                         bitmap_alloc);
+                         numericInfo,
+                         bitmap_alloc /* output */);
         /// TODO(zpeng): numericInfo.ws_bitmap should be lowered from Index Tree dialect.
         numericInfo.ws_bitmap = bitmap_alloc;
         numericInfo.ws_bitmap_valueAccessIdx = allValueAccessIdx[lhs_loc][0];
+      }
+
+      if (numericInfo.W_data_alloc == nullptr)
+      {
+        genNumericWorkspace(builder,
+                            loc,
+                            /*numeric_outermost_forLoop=*/ forLoops.back(),
+                            symbolicInfo,
+                            numericInfo /* output */);
       }
 
       /// Generate the mask-array (please not confuse with mark-array)
@@ -1908,7 +2128,9 @@ namespace
                                           numericInfo,
                                           maskingInfo,
                                           if_notAlreadySet /* output */);
-
+      {/// test
+        comet_pdump(cur_op->getParentOfType<ModuleOp>());
+      }
       /// if-then region corresponding to if_notAlreadySet instruction.
       /// if (&if_notAlreadySet. getThenRegion())
       if (!if_notAlreadySet.getThenRegion().empty())
@@ -1940,7 +2162,8 @@ namespace
                                              semiringFirst,
                                              semiringSecond,
                                              main_tensors_all_Allocs,
-                                             allValueAccessIdx);
+                                             allValueAccessIdx,
+                                             numericInfo);
       }
     }
     else
@@ -2323,7 +2546,8 @@ namespace
 
     /// Generate current for-loop body
     Value &mtxC_val = symbolicInfo.mtxC_val;
-    Value &ws_data = tensors_rhs_Allocs[0][0];
+//    Value &ws_data = tensors_rhs_Allocs[0][0];
+    Value &ws_data = numericInfo.W_data_alloc;
     Value &ws_bitmap = numericInfo.ws_bitmap;
     Value rowptr = curr_for_loop.getInductionVar();
     builder.setInsertionPointToStart(curr_for_loop.getBody());
@@ -2345,9 +2569,13 @@ namespace
     }
 
     /// Free up ws_data and ws_bitmap after
-    builder.setInsertionPointAfter(parent_for_loop);
-    builder.create<memref::DeallocOp>(loc, ws_data);
-    builder.create<memref::DeallocOp>(loc, ws_bitmap);
+    /// if Numeric Phase has omp.parallel, the deallocation of ws_data and ws_bitmap is generated when they are allocated.
+    if (!numericInfo.omp_parallel_op)
+    {
+      builder.setInsertionPointAfter(parent_for_loop);
+      builder.create<memref::DeallocOp>(loc, ws_data);
+      builder.create<memref::DeallocOp>(loc, ws_bitmap);
+    }
 
     /// Restore the insertion point
     builder.restoreInsertionPoint(last_insertion_point);
@@ -3348,7 +3576,7 @@ namespace
 #endif
   }
 
-  /// Dealloc the old C.val and C.col before the outermost_forLoop.
+  /// Dealloc the old C.val and C.col before the symbolic omp.parallel.
   /// Replace the old C.val and C.col with new ones.
   void deallocMtxCColCVal(OpBuilder &builder,
                           Location &loc,
@@ -3364,8 +3592,16 @@ namespace
     /// Store the insertion point
     auto last_insertion_point = builder.saveInsertionPoint();
 
-    /// Set the insertion point before the symbolic outermost_forloop
-    builder.setInsertionPoint(outermost_forLoop);
+    /// Set the insertion point before the symbolic omp.parallel
+//    builder.setInsertionPoint(outermost_forLoop);
+    if (symbolicInfo.omp_parallel_op)
+    {
+      builder.setInsertionPoint(symbolicInfo.omp_parallel_op);
+    }
+    else
+    {
+      builder.setInsertionPoint(outermost_forLoop);
+    }
 
     builder.create<memref::DeallocOp>(loc, old_C_col);
     builder.create<memref::DeallocOp>(loc, old_C_val);
@@ -3386,15 +3622,24 @@ namespace
     replaceOldValueToNewValue(old_C_val, symbolicInfo.mtxC_val);
   }
 
-  /// Generate a new sparse tensor to replace the old output sparse tensor after the numeric outermost for-loop.
+  /// Generate a new sparse tensor to replace the old output sparse tensor after the numeric omp.parallel.
   /// (e.g., ta.print(old_tensor)  ->  ta.print(new_tensor)
   void genReplaceOutputSparseTensorToNewSparseTensor(OpBuilder &builder,
                                                      Location &loc,
                                                      AbstractLoopOp &numeric_outermost_forLoop,
-                                                     SymbolicInfo &symbolicInfo)
+                                                     SymbolicInfo &symbolicInfo,
+                                                     NumericInfo &numericInfo)
   {
-    /// Set the insertion point after the outermost_forloop
-    builder.setInsertionPointAfter(numeric_outermost_forLoop);
+    /// Set the insertion point after the numeric omp.parallel
+//    builder.setInsertionPointAfter(numeric_outermost_forLoop);
+    if (numericInfo.omp_parallel_op)
+    {
+      builder.setInsertionPointAfter(numericInfo.omp_parallel_op);
+    }
+    else
+    {
+      builder.setInsertionPointAfter(numeric_outermost_forLoop);
+    }
 
     Value &mtxC = symbolicInfo.mtxC;
     Value &mtxC_col = symbolicInfo.mtxC_col;
@@ -3439,13 +3684,14 @@ namespace
   }
 
   /// Logistics of memory about old mtxC, mtxC.col, and mtxC.val
-  /// 1. Dealloc the old C.val and C.col before the outermost_forLoop.
+  /// 1. Dealloc the old C.val and C.col before the symbolic omp.parallel.
   /// 2. Change mtxC's old value in C_col_size (A2crd_size) and C_val_size (Aval_size) to new mtxC_val_size.
   /// 3. Generate a new sparse tensor to replace the old output sparse tensor after the numeric outermost for-loop.
   void logisticsForMtxCColCVal(OpBuilder &builder,
                                Location &loc,
                                AbstractLoopOp &symbolic_outermost_forLoop,
                                SymbolicInfo &symbolicInfo,
+                               NumericInfo &numericInfo,
                                AbstractLoopOp &numeric_outermost_forLoop)
   {
 
@@ -3462,13 +3708,13 @@ namespace
                                   loc,
                                   symbolicInfo);
 
-    /// Generate a new sparse tensor to replace the old output sparse tensor after the numeric outermost for-loop.
+    /// Generate a new sparse tensor to replace the old output sparse tensor after the numeric omp.parallel .
     /// (e.g., ta.print(old_tensor)  ->  ta.print(new_tensor)
     genReplaceOutputSparseTensorToNewSparseTensor(builder,
                                                   loc,
                                                   numeric_outermost_forLoop,
-                                                  symbolicInfo);
-
+                                                  symbolicInfo,
+                                                  numericInfo);
     ///  builder.restoreInsertionPoint(last_insertion_point);
   }
 
@@ -3551,6 +3797,7 @@ namespace
                                    std::vector<Value> &symbolic_nested_AccessIdx,
                                    std::vector<std::vector<Value>> &symbolic_allValueAccessIdx,
                                    SymbolicInfo &symbolicInfo,
+                                   NumericInfo &numericInfo,
                                    std::vector<AbstractLoopOp> &numeric_nested_forops,
                                    MaskingInfo &maskingInfo)
   {
@@ -3558,9 +3805,17 @@ namespace
     AbstractLoopOp &outermost_forLoop = symbolic_nested_forops.back();
     Value &outermost_forLoop_valueAccessIdx = symbolic_nested_AccessIdx.back();
     AbstractLoopOp &semiringLoop = symbolic_nested_forops[0];
-    Value &mark_array = tensors_lhs_Allocs[1][0];
-    Value &W_id_list_size = tensors_lhs_Allocs[3][0];
+//    Value &mark_array = tensors_lhs_Allocs[1][0];
+//    Value &W_id_list_size = tensors_lhs_Allocs[3][0];
+    Value &W_id_list_size = symbolicInfo.row_offset_alloc;
     Value &semiringLoop_valueAccessIdx = symbolic_allValueAccessIdx[lhs_loc][0];
+
+    /// Generate mark_array before symbolic outer-most for-loop
+    genSymbolicMarkArray(builder,
+                         loc,
+                         outermost_forLoop,
+                         symbolicInfo /*output*/);
+    Value &mark_array = symbolicInfo.mark_array_alloc;
 
     /// Generate mark before symbolic outer-most for-loop
     Value mark_alloc;
@@ -3624,11 +3879,18 @@ namespace
                              symbolicInfo.mtxC_rowptr, /// mtxC_rowptr
                              i_idx,                    /// value access index i_idx
                              W_id_list_size /* W_id_list_size */);
-
     /// Store the insertion point
     auto last_insertion_point = builder.saveInsertionPoint();
-    /// Set the insertion point after the outermost_forloop
-    builder.setInsertionPointAfter(outermost_forLoop);
+    /// Set the insertion point after the symbolic omp.parallel
+//    builder.setInsertionPointAfter(outermost_forLoop);
+    if (symbolicInfo.omp_parallel_op)
+    {
+      builder.setInsertionPointAfter(symbolicInfo.omp_parallel_op);
+    }
+    else
+    {
+      builder.setInsertionPointAfter(outermost_forLoop);
+    }
 
     /// Generate the reduce of output C.rowptr and new C.col and new C.val
     ///   C.rowptr[M] = 0;
@@ -3652,8 +3914,8 @@ namespace
                             loc,
                             outermost_forLoop, /// symbolic_outermost_forLoop
                             symbolicInfo,
+                            numericInfo,
                             numeric_outermost_forLoop);
-
     /// Restore the insertion point
     builder.restoreInsertionPoint(last_insertion_point);
   }
@@ -3678,7 +3940,7 @@ namespace
     Location loc = rootOp.getLoc();
     comet_debug() << " \n";
 
-    comet_debug() << " Current IndexTreeComputeOp:";
+    comet_debug() << " Current IndexTreeComputeOp:\n";
     comet_vdump(cur_op);
 
     const bool comp_worksp_opt(cur_op.getCompWorkspOpt());
@@ -3743,6 +4005,18 @@ namespace
                       allPerms_rhs /* output */,
                       main_tensors_all /* output */,
                       main_tensors_rhs /* output */);
+    /// Notes about tensors_lhs_Allocs:
+    /// When do SpGEMM C = A * B (all matrices are sparse)
+    /// and the Compute Node is Cij = Aik * Bkj, then the Index Tree dialect would be something like
+    /**
+    %57 = "it.ComputeRHS"(%25, %48) <{allFormats = [["D", "CU"], ["D", "CU"]], allPerms = [[0, 1], [1, 2]]}> : (!ta.spTensor<tensor<?xindex>, tensor<?xindex>, tensor<?xindex>, tensor<?xindex>, tensor<?xindex>, tensor<?xindex>, tensor<?xindex>, tensor<?xindex>, tensor<?xf64>, index, index, index, index, index, index, index, index, index, index, index>, !ta.spTensor<tensor<?xindex>, tensor<?xindex>, tensor<?xindex>, tensor<?xindex>, tensor<?xindex>, tensor<?xindex>, tensor<?xindex>, tensor<?xindex>, tensor<?xf64>, index, index, index, index, index, index, index, index, index, index, index>) -> tensor<*xf64>
+    %58 = "it.ComputeLHS"(%50, %51, %52, %53) <{allFormats = [["D"]], allPerms = [[2]]}> : (tensor<?xf64>, tensor<?xindex>, tensor<?xindex>, tensor<1xindex>) -> tensor<*xf64>
+    %59 = "it.Compute"(%57, %58) <{MaskType = "none", comp_worksp_opt = true, semiring = "plusxy_times"}> : (tensor<*xf64>, tensor<*xf64>) -> i64
+     */
+     /// %50 (tensors_lhs_Allocs[0]): the dense Workspace
+     /// %51 (tensors_lhs_Allocs[1]): the mark_array (previously the is_visited_alloc)
+     /// %52 (tensors_lhs_Allocs[2]): ???
+     /// %53 (tensors_lhs_Allocs[3]): W_id_list_size (DEPRECATED, replaced by symbolicInfo.row_offset_alloc and numericInfo.row_offset_alloc)
 
     /// ----------------- ///
     /// Get main_tensors_all_Allocs
@@ -3841,19 +4115,31 @@ namespace
             builder.setInsertionPoint(symbolic_nested_forops[0].getBody()->getTerminator());
 
             /// Symbolic Phase uses the W_id_list_size in the Index Tree (main_tensors_all_Allocs[lhs_loc].back)
-            /// to record the current row size.
+            /// to record the current row size. (use_dynamic_init == false)
             ///     W_id_list_size = 0;
-            /// However, Numeric Phase should use C.rowptr[i_idx] to initialize W_id_list_size.
+            /// However, Numeric Phase should use C.rowptr[i_idx] to initialize W_id_list_size. (use_dynamic_init == true)
             ///     W_id_list_size = C.rowptr[i_idx];
-            genWorkspaceCmptOpInitialAssignment(builder,
-                                                loc,
-                                                lhs_loc,
-                                                cstop,
-                                                symbolic_nested_forops,
-                                                tensors_lhs_Allocs,
-                                                main_tensors_all_Allocs,
-                                                false /* use_dynamic_init */,
-                                                symbolicInfo);
+            if (symbolicInfo.has_omp_parallel)
+            {
+              genInitSymbolicRowOffset(builder,
+                                       loc,
+                                       /*const_init=*/cstop,
+                                       symbolicInfo);
+              /// TODO(zhen.peng): delete the global row_offset ( main_tensors_all_Allocs[lhs_loc].back() )
+            }
+            else
+            {
+              genWorkspaceCmptOpInitialAssignment(builder,
+                                                  loc,
+                                                  lhs_loc,
+                                                  cstop,
+                                                  symbolic_nested_forops,
+                                                  tensors_lhs_Allocs,
+                                                  main_tensors_all_Allocs,
+                                                  false /* use_dynamic_init */,
+                                                  symbolicInfo);
+              symbolicInfo.row_offset_alloc = main_tensors_all_Allocs[lhs_loc].back();   /// Store the row_offset_alloc
+            }
 
             /// Prepare C, C.rowptr
             if (symbolicInfo.mtxC_rowptr == nullptr)
@@ -3870,19 +4156,33 @@ namespace
             /// Restore the insertion point
             builder.restoreInsertionPoint(last_insertion_point);
           } /// End symbolic phase
+          /// Numeric phase
           if (allFormats[lhs_loc].empty())
           {
             /// The computeOp node is W_id_list_size = 0,
             /// then do W_id_list_size = symbolicInfo.mtxC_rowptr[idx]
-            genWorkspaceCmptOpInitialAssignment(builder,
-                                                loc,
-                                                lhs_loc,
-                                                cstop,
-                                                nested_forops,
-                                                tensors_lhs_Allocs,
-                                                main_tensors_all_Allocs,
-                                                true /* use_dynamic_init */,
-                                                symbolicInfo);
+            if (numericInfo.has_omp_parallel)
+            {
+              genInitNumericRowOffset(builder,
+                                      loc,
+                                      /*lhs_loc=*/ lhs_loc,
+                                      /*nested_forops=*/ nested_forops,
+                                      symbolicInfo,
+                                      numericInfo);
+            }
+            else
+            {
+              genWorkspaceCmptOpInitialAssignment(builder,
+                                                  loc,
+                                                  lhs_loc,
+                                                  cstop,
+                                                  nested_forops,
+                                                  tensors_lhs_Allocs,
+                                                  main_tensors_all_Allocs,
+                                                  true /* use_dynamic_init */,
+                                                  symbolicInfo);
+              numericInfo.row_offset_alloc = main_tensors_all_Allocs[lhs_loc].back();   /// Store the row_offset_alloc
+            }
           }
           else
           {
@@ -3928,6 +4228,7 @@ namespace
                                           allValueAccessIdx);
         }
         /// Cij = Wj
+        /// When Cij is sparse
         else if (lhs.getType().isa<tensorAlgebra::SparseTensorType>())
         {
 
@@ -3957,7 +4258,6 @@ namespace
                                                           nested_AccessIdx,
                                                           symbolicInfo,
                                                           numericInfo);
-            ///          }
           }
           else
           {
@@ -4050,6 +4350,7 @@ namespace
                                     symbolic_nested_AccessIdx,
                                     symbolic_allValueAccessIdx,
                                     symbolicInfo,
+                                    numericInfo,
                                     nested_forops /* numeric_nested_forops= */,
                                     maskingInfo);
 
@@ -4144,6 +4445,7 @@ namespace
                                       symbolic_nested_AccessIdx,
                                       symbolic_allValueAccessIdx,
                                       symbolicInfo,
+                                      numericInfo,
                                       nested_forops /* numeric_nested_forops= */,
                                       maskingInfo);
 
@@ -4368,6 +4670,20 @@ void LowerIndexTreeToSCFPass::doLoweringIndexTreeToSCF(indexTree::IndexTreeOp &r
     symbolicInfo.has_symbolic_phase = true;
   }
 
+  /// Check if needs generate `omp.parallel`
+  if (symbolicInfo.has_symbolic_phase)
+  {
+    symbolicInfo.has_omp_parallel = true;
+    numericInfo.has_omp_parallel = true;
+  }
+  /// Generate `omp.parallel`
+  if (symbolicInfo.has_omp_parallel && numericInfo.has_omp_parallel) {
+    genOmpParallelSymbolicAndNumeric(builder,
+                                     rootOp,
+                                     symbolicInfo, /*output*/
+                                     numericInfo /*output*/);
+  }
+
   for (unsigned int i = 0; i < wp_ops.size(); i++)
   {
     comet_debug() << " i: " << i << "\n";
@@ -4435,7 +4751,7 @@ void LowerIndexTreeToSCFPass::doLoweringIndexTreeToSCF(indexTree::IndexTreeOp &r
       }
 
       comet_debug() << " call genForOps, i = " << i << "\n";
-      genForOps(tensors, ids, formats, rootOp, builder, opstree_vec[i], symbolicInfo, iteratorType);
+      genForOps(tensors, ids, formats, rootOp, builder, opstree_vec[i], symbolicInfo, numericInfo, iteratorType);
       {
         comet_pdump(rootOp->getParentOfType<ModuleOp>());
       }
@@ -4528,6 +4844,9 @@ void LowerIndexTreeToSCFPass::runOnOperation()
   func::FuncOp function = getOperation();
   auto module = function.getOperation()->getParentOfType<ModuleOp>();
   auto *ctx = &getContext();
+
+  /// Load OpenMP dialect
+  // ctx->loadDialect<mlir::omp::OpenMPDialect>();
 
   /// Declare comet_sort_index()
   declareSortFunc(module,
