@@ -1,0 +1,31 @@
+# RUN: comet-opt --target=GPU --convert-ta-to-it --convert-to-loops --convert-to-triton --convert-to-llvm %s &> eltwise_monoidMin_DensexDense_oDense.llvm
+# RUN: mlir-cpu-runner eltwise_monoidMin_DensexDense_oDense.llvm -O3 -e main -entry-point-result=void -shared-libs=%comet_utility_library_dir/libcomet_runner_utils%shlibext | FileCheck %s
+
+
+def main() {
+	#IndexLabel Declarations
+	IndexLabel [a] = [4];
+	IndexLabel [b] = [4];
+
+	#Tensor Declarations
+	Tensor<double> A([a, b], {Dense});	  
+	Tensor<double> B([a, b], {Dense});
+	Tensor<double> C([a, b], {Dense});
+
+	#Tensor Readfile Operation
+	A[a, b] = 2.7;
+	B[a, b] = 3.2;	
+
+	#If output tensor is dense, it needs to be initialized to 0
+	C[a, b] = 0.0;
+
+	#Tensor Contraction
+	C[a, b] = A[a, b] @(min) B[a, b];
+	
+	print(C);
+}
+
+# Print the result for verification.
+# CHECK: data = 
+# CHECK-NEXT: 2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,
+# REQUIRES: gpu_target_enabled

@@ -31,7 +31,7 @@
 std::unordered_set<std::string> AbstractLoopOp::supported_types = {"default",
                                                                    "serial",
                                                                    "parallel",
-                                                                   "omp.parallel",
+                                                                   "omp.parallel", /* omp.parallel is used by SpGEMM */
                                                                    "reduction",
                                                                    "window"};
 
@@ -67,7 +67,7 @@ void AbstractLoopOp::setOp(omp::WsLoopOp parallelOp, std::string iterator_type)
 
 void AbstractLoopOp::setLowerBound(mlir::Value &lowerBound)
 {
-  if (iteratorType == "parallel")
+  if ("parallel" == iteratorType)
   {
     llvm::errs() << "Error: scf::ParallelOp does not support setLowerBound.\n";
   }
@@ -84,7 +84,7 @@ void AbstractLoopOp::setLowerBound(mlir::Value &lowerBound)
 
 void AbstractLoopOp::setUpperBound(mlir::Value &upperBound)
 {
-  if (iteratorType == "parallel")
+  if ("parallel" == iteratorType)
   {
     llvm::errs() << "Error: scf::ParallelOp does not support setUpperBound.\n";
   }
@@ -101,7 +101,7 @@ void AbstractLoopOp::setUpperBound(mlir::Value &upperBound)
 
 mlir::Block *AbstractLoopOp::getBody()
 {
-  if (iteratorType == "parallel")
+  if ("parallel" == iteratorType)
   {
     auto handle = mlir::dyn_cast<scf::ParallelOp>(op);
     return handle.getBody();
@@ -120,7 +120,7 @@ mlir::Block *AbstractLoopOp::getBody()
 
 mlir::Value AbstractLoopOp::getInductionVar()
 {
-  if (iteratorType == "parallel")
+  if ("parallel" == iteratorType)
   {
     auto handle = mlir::dyn_cast<scf::ParallelOp>(op);
     return handle.getInductionVars()[0];

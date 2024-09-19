@@ -120,6 +120,24 @@ include_directories(${COMET_INCLUDE_DIR})
 # Directory setup
 #-------------------------------------------------------------------------------
 
+option(ENABLE_GPU_TARGET OFF) 
+
+if(${ENABLE_GPU_TARGET})
+  set(TRITON_PATH "" CACHE PATH "Path to Triton")
+  set(TRITON_BUILD_PATH "${CMAKE_BINARY_DIR}/triton" CACHE INTERNAL "Path to Triton Build")
+  if(NOT DEFINED CUDA_COMPUTE_CAPABILITY)
+    message(FATAL_ERROR "Please specify cuda compute capability requested")
+  endif()
+  add_compile_definitions(CUDA_COMPUTE_CAPABILITY=${CUDA_COMPUTE_CAPABILITY})
+
+  add_subdirectory(${TRITON_PATH} ${TRITON_BUILD_PATH})
+  get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
+  include_directories("${TRITON_PATH}")
+  include_directories("${TRITON_PATH}/include/")
+  include_directories("${TRITON_BUILD_PATH}/include/")
+  add_definitions(-DENABLE_GPU_TARGET)
+endif()
+
 add_subdirectory(include/comet)
 add_subdirectory(lib)
 add_subdirectory(frontends/comet_dsl)
@@ -130,6 +148,8 @@ option(COMET_INCLUDE_DOCS "Generate build targets for the COMET docs.")
 if (COMET_INCLUDE_DOCS)
   add_subdirectory(docs)
 endif()
+
+
 
 install(DIRECTORY include/comet
   DESTINATION include

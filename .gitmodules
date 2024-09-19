@@ -4,3 +4,6 @@
 [submodule "blis"]
 	path = blis
 	url = https://github.com/flame/blis.git
+[submodule "triton"]
+	path = triton
+	url = https://github.com/triton-lang/triton.git

@@ -254,6 +254,7 @@ namespace
                         tensorAlgebra::TensorSetOp,
                         tensorAlgebra::IndexLabelOp,
                         tensorAlgebra::DenseConstantOp,
+                        tensorAlgebra::ScalarOp,
                         tensorAlgebra::SparseTensorConstructOp>();
 
       if (failed(applyPartialConversion(function, target, std::move(patterns))))

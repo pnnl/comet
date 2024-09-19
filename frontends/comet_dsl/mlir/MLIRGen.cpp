@@ -46,6 +46,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopedHashTable.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cstdint>
 #include <map>
 #include <numeric>
 #include <cstdlib> /// for random num generation
@@ -467,9 +468,21 @@ namespace
         default:
           comet_debug() << "ERROR: unsupported operator type: ASCII Code(" << binop.getOp() << ")\n";
         }
+
         mlir::StringAttr opAttr = builder.getStringAttr(op);
-        mlir::Type elementType = builder.getF64Type();
-        auto returnDataType = mlir::RankedTensorType::get(1, elementType);
+        mlir::RankedTensorType returnDataType;
+        if(lhs.getType().cast<mlir::RankedTensorType>().getShape() != rhs.getType().cast<mlir::RankedTensorType>().getShape())
+        {
+          returnDataType = lhs.getType().cast<mlir::RankedTensorType>();
+          auto bcastRhs = builder.create<DenseConstantOp>(location, returnDataType, mlir::cast<DenseConstantOp>(rhs.getDefiningOp()).getValueAttr());
+          comet_vdump(bcastRhs);
+          rhs.replaceAllUsesWith(bcastRhs);
+          rhs = bcastRhs;
+        }
+        else {
+          mlir::Type elementType = builder.getF64Type();
+          returnDataType = mlir::RankedTensorType::get(1, elementType);
+        }
         comet_vdump(rhs);
         comet_vdump(lhs);
 
@@ -481,7 +494,7 @@ namespace
           comet_debug() << "creating a new variable declaration, since the user did not declare it\n";
 
           double data = 0.0;
-          auto dataAttribute = mlir::DenseElementsAttr::get(returnDataType, llvm::ArrayRef(data));
+          auto dataAttribute = mlir::DenseElementsAttr::get(mlir::RankedTensorType::get({1}, builder.getF64Type()), llvm::ArrayRef(data));
           auto denseConst = builder.create<DenseConstantOp>(location, returnDataType, dataAttribute);
 
           theOutput = denseConst;
@@ -1407,7 +1420,7 @@ namespace
       auto tensor_format = tensordecl.getFormat();
       for (const auto &lbl_str : dim_lbls)
       {
-        if (auto var = lbl_str == "?")
+        if (lbl_str == "?")
         {
           dims_sizes.push_back(mlir::ShapedType::kDynamic);
         }

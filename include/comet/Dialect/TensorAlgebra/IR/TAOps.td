@@ -260,7 +260,7 @@ def DenseConstantOp : TA_Op<"constant", [Pure]> {
   let results = (outs F64Tensor);
 
   /// Indicate that the operation has a custom parser and printer method.
-  let hasCustomAssemblyFormat = 1;
+  // let hasCustomAssemblyFormat = 1;
 
   let builders = [
     OpBuilder<(ins "DenseElementsAttr":$value), 

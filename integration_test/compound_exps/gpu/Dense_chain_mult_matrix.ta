@@ -1,0 +1,31 @@
+# RUN: comet-opt --convert-ta-to-it --convert-to-loops --convert-to-triton --convert-to-llvm %s &> Dense_chain_mult_matrix.llvm
+# RUN: mlir-cpu-runner Dense_chain_mult_matrix.llvm -O3 -e main -entry-point-result=void -shared-libs=%comet_utility_library_dir/libcomet_runner_utils%shlibext | FileCheck %s
+
+
+def main() {
+	#IndexLabel Declarations
+	IndexLabel [i] = [2];
+	IndexLabel [j] = [2];  
+	IndexLabel [k] = [5];           
+	IndexLabel [l] = [2];           
+
+	#Tensor Declarations
+	Tensor<double> A([i, j], {Dense});	  
+	Tensor<double> B([j, k], {Dense});
+	Tensor<double> C([k, l], {Dense});
+	Tensor<double> D([i, l], {Dense});
+
+	#Tensor Fill Operation
+	A[i, j] = 2.2;
+	B[j, k] = 3.4;
+	C[k, l] = 1.0;
+	D[i, l] = 0.0;
+
+	D[i, l] = A[i, j] * B[j, k] * C[k,l];
+	print(D);
+}
+
+# Print the result for verification.
+# CHECK: data = 
+# CHECK-NEXT: 74.8,74.8,74.8,74.8,
+# REQUIRES: gpu_target_enabled

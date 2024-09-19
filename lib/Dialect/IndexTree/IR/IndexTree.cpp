@@ -250,18 +250,18 @@ vector<mlir::Operation *> Index_Tree::getContainingTAOps()
   return ops;
 }
 
-void Index_Tree::setSizeOfIteratorTypesByIndices(IndicesType allIndices)
-{
-  for (int index : allIndices)
-  {
-    iteratorTypes[index] = nullptr;
-  }
-}
+//void Index_Tree::setSizeOfIteratorTypesByIndices(IndicesType allIndices)
+//{
+//  for (int index : allIndices)
+//  {
+//    iteratorTypes[index] = nullptr;
+//  }
+//}
 
 std::unordered_set<std::string> IteratorType::supported_types = {"default",
                                                                  "serial",
                                                                  "parallel",
-                                                                 "omp.parallel",
+                                                                 "omp.parallel", /* omp.parallel is used by SpGEMM */
                                                                  "reduction",
                                                                  "window"};
 void IteratorType::setType(std::string t) {

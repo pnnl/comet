@@ -5,6 +5,8 @@ import subprocess
 import multiprocessing
 import os
 import sys
+import cometpy.cfg
+
 
 def run_test_case(test_file):
     print("Running", test_file, end=" ")
@@ -29,6 +31,8 @@ if __name__ == '__main__':
 
     for c in categories:
         files = files + glob.glob("./"+c+"/test_*.py")
+        if cometpy.cfg.gpu_target_enabled:
+            files = files + glob.glob("./"+c+"/gpu/test_*.py")
 
 
     print("\nFound" , len(files), "test cases")

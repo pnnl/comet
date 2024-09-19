@@ -127,7 +127,7 @@ def all_dense(arg_vals) -> bool :
 
 def comment_unneeded_dense(input_, arg_vals):
     input = input_.splitlines()
-    out = None
+    outs = []
     indexes = []
     for i, v in enumerate(arg_vals):
         if not scp.sparse.issparse(v):
@@ -145,7 +145,7 @@ def comment_unneeded_dense(input_, arg_vals):
             for j in range(len(input[:i])):
                 if cast + " = memref.cast" in input[j]:
                     out = input[j][input[j].find("%alloc")  : input[j].find(":")].lstrip().strip()
-                    
+                    outs.append(out)
                     start = input[j].find(":")
                     end = input[j][start:].find("to")
                     replace['%arg'+str(len(arg_vals))] = out +" " + input[j][start:start+end].lstrip().strip()
@@ -162,6 +162,7 @@ def comment_unneeded_dense(input_, arg_vals):
             # input[i] = "//from dense" + input[i]
             input[i] = ""
             fill_remove.append(a)
+
         elif "linalg.fill" in input[i]:
             for k in range(len(fill_remove)):
                 if fill_remove[k] in input[i]:
@@ -179,6 +180,29 @@ def comment_unneeded_dense(input_, arg_vals):
         input[1] = input[1].replace(repl, replace[v])
             
     output = ""
+    arg_vals_init = {}
+    input_arg_names = []
+    collected = False
+    for i in range(len(input)):
+        l = input[i]
+        if not collected and l.lstrip().strip().startswith("func.func @") and l.strip().endswith("{"):
+            for arg in l[l.find("(")+1:l.find(")")].split(","):
+                if arg.split(":")[0].strip().lstrip() not in outs:
+                    input_arg_names.append(arg.split(":")[0].strip().lstrip())
+            for v in input_arg_names:
+                arg_vals_init[v] = False
+            collected = True
+        elif "memref.store" in input[i] :
+            for arg in input_arg_names:
+                if arg+"[" in input[i] and arg_vals_init[arg] == False:
+                    init = input[i].lstrip().split(" ")[1][:-1].lstrip().strip()
+                    for l in input:
+                        if l.lstrip().strip().startswith(init) and "arith.constant" in l:
+                            if float(l.strip().lstrip().split(" ")[3]) == 0.0 :
+                                input[i] = ""
+                                arg_vals_init[arg] = True
+                                break
+
 
     for line in input:
         if line:
@@ -343,6 +367,7 @@ def lower_ta_to_mlir_with_jit(mlir_in, mlir_lower_flags, arg_vals, uuid_s):
     #     files_to_cleanup.append(os.path.join( os.getcwd(), scf_out_file))
 
     scf_out  = p.stderr.decode()
+
     scf_out = comment_unneeded_sparse(scf_out, arg_vals)
     scf_out = comment_unneeded_dense(scf_out, arg_vals)
     # f.write(scf_out)
@@ -447,16 +472,16 @@ def generate_llvm_args_from_ndarrays(num_in, *ndargs):
                 A2tile_crd = np.array([-1], dtype=np.int64)
                 # CSR
                 if ndarray.format == 'csr':
-                    A1pos = np.array([ndarray.get_shape()[0]], dtype=np.int64)
+                    A1pos = np.array([ndarray.shape[0]], dtype=np.int64)
                     A1crd = np.array([-1], dtype=np.int64)
                     A2pos = ndarray.indptr.astype('int64')
                     A2crd = ndarray.indices.astype('int64')
 
                     # Based on the desc_sizes array in SparseUtils.cpp:read_input_sizes_2D
                 
-                    # llvm_args += [*np_array_to_memref(np.array([1, 1, ndarray.get_shape()[0] + 1, ndarray.getnnz(), ndarray.getnnz(), ndarray.get_shape()[0], ndarray.get_shape()[1]], dtype='int64'))]
+                    # llvm_args += [*np_array_to_memref(np.array([1, 1, ndarray.shape[0] + 1, ndarray.nnz, ndarray.nnz, ndarray.shape[0], ndarray.shape[1]], dtype='int64'))]
                     # With tiles
-                    llvm_args += [*np_array_to_memref(np.array([1, 1, 0, 0, ndarray.get_shape()[0] + 1, ndarray.getnnz(), 0, 0, ndarray.getnnz(), ndarray.get_shape()[0], ndarray.get_shape()[1]], dtype='int64'))]
+                    llvm_args += [*np_array_to_memref(np.array([1, 1, 0, 0, ndarray.shape[0] + 1, ndarray.nnz, 0, 0, ndarray.nnz, ndarray.shape[0], ndarray.shape[1]], dtype='int64'))]
                 # COO
                 elif ndarray.format == 'coo':
                     A1pos = np.array([0, ndarray.nnz], dtype=np.int64)
@@ -466,21 +491,21 @@ def generate_llvm_args_from_ndarrays(num_in, *ndargs):
 
                     # Based on the desc_sizes array in SparseUtils.cpp:read_input_sizes_2D
                 
-                    # llvm_args += [*np_array_to_memref(np.array([2, ndarray.nnz, 1, ndarray.getnnz(), ndarray.getnnz(), ndarray.get_shape()[0], ndarray.get_shape()[1]], dtype='int64'))]
+                    # llvm_args += [*np_array_to_memref(np.array([2, ndarray.nnz, 1, ndarray.nnz, ndarray.nnz, ndarray.shape[0], ndarray.shape[1]], dtype='int64'))]
                     # With tiles
-                    llvm_args += [*np_array_to_memref(np.array([2, ndarray.nnz, 0, 0, 1, ndarray.getnnz(), 0, 0, ndarray.getnnz(), ndarray.get_shape()[0], ndarray.get_shape()[1]], dtype='int64'))]
+                    llvm_args += [*np_array_to_memref(np.array([2, ndarray.nnz, 0, 0, 1, ndarray.nnz, 0, 0, ndarray.nnz, ndarray.shape[0], ndarray.shape[1]], dtype='int64'))]
                 
                 # CSC
                 elif ndarray.format == 'csc':
                     A1pos = ndarray.indptr.astype('int64')
                     A1crd = ndarray.indices.astype('int64')
-                    A2pos = np.array([ndarray.get_shape()[1]], dtype=np.int64)
+                    A2pos = np.array([ndarray.shape[1]], dtype=np.int64)
                     
                     # Based on the desc_sizes array in SparseUtils.cpp:read_input_sizes_2D
                 
-                    # llvm_args += [*np_array_to_memref(np.array([ndarray.get_shape()[1] + 1, ndarray.nnz, 1, 1, ndarray.getnnz(), ndarray.get_shape()[0], ndarray.get_shape()[1]], dtype='int64'))]
+                    # llvm_args += [*np_array_to_memref(np.array([ndarray.shape[1] + 1, ndarray.nnz, 1, 1, ndarray.nnz, ndarray.shape[0], ndarray.shape[1]], dtype='int64'))]
                     # With tiles
-                    llvm_args += [*np_array_to_memref(np.array([ndarray.get_shape()[1] + 1, ndarray.nnz, 0, 0, 1, 1, 0, 0, ndarray.getnnz(), ndarray.get_shape()[0], ndarray.get_shape()[1]], dtype='int64'))]
+                    llvm_args += [*np_array_to_memref(np.array([ndarray.shape[1] + 1, ndarray.nnz, 0, 0, 1, 1, 0, 0, ndarray.nnz, ndarray.shape[0], ndarray.shape[1]], dtype='int64'))]
                 
                 Aval = ndarray.data.astype('float64')
                 # Based on the  desc_A1pos/crd, desc_A2pos/crd, desc_Aval arrays in SparseUtils.cpp: read_input_2D
@@ -509,7 +534,6 @@ def translate_and_exec_llvm_with_jit(llvm_in,scf_lower_flags, func_name, inputs,
     path_to_cometopt = cfg.comet_path+"/bin/comet-opt -x mlir"
     to_llvm_command = path_to_cometopt + scf_lower_flags #+ llvm_in
     translate_mlir_command = cfg.llvm_path+"/bin/mlir-translate --mlir-to-llvmir -- " 
-
     libname =   "./lib"+llvmir_file+func_name+".so"
     gcc_command = cfg.llvm_path+"/bin/clang -march=native -mtune=native -x ir -Wno-everything --shared -O3 "+platform_args+ " -o "+ temp_dir + libname+" -fpic -L {0}/lib/ -Wl,-rpath,{0}/lib/ -lcomet_runner_utils -".format(cfg.comet_path)
 
@@ -518,7 +542,6 @@ def translate_and_exec_llvm_with_jit(llvm_in,scf_lower_flags, func_name, inputs,
     # 2. Call mlir-translate to convert llvm to llvmir 
     # 3. Call clang to generate library
     p = subprocess.run(to_llvm_command +' 2>&1 |  '+ translate_mlir_command +' | ' + gcc_command , input=llvm_in.encode('utf-8'), stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-
     if(p.returncode != 0):
         cleanup()
         raise AssertionError("gcc failed with error code: {}. Error: {}".format(p.returncode, p.stderr))
@@ -578,7 +601,6 @@ def translate_and_exec_llvm(llvm_in,func_name, out_dims, uuid_s):
     translate_mlir_command = "../llvm/build/bin/mlir-translate --mlir-to-llvmir " + llvm_in
 
     p = subprocess.run(shlex.split(translate_mlir_command) , stdout=subprocess.PIPE, stderr=subprocess.PIPE,shell=False,close_fds=False)
-    # print(llvm_in)
     llvmir_out = p.stdout.decode()
 
     llvmir_out = llvmir_out.replace(func_name, "main")
@@ -671,10 +693,10 @@ def lower_dialect(ta_dialect_rep, out_dims, compile_with_flags,func_name):
     return result
 
 
-def lower_dialect_with_jit(ta_dialect_rep, out_dims, compile_with_flags,func_name, args_vals, outputs):
+def lower_dialect_with_jit(ta_dialect_rep, target: str, out_dims, compile_with_flags,func_name, args_vals, outputs):
 
     mlir_lower_flags = " "
-
+        
     if compile_with_flags != None:
         if "--convert-tc-to-ttgt" not in compile_with_flags:
             mlir_lower_flags += "  --convert-ta-to-it "
@@ -689,7 +711,24 @@ def lower_dialect_with_jit(ta_dialect_rep, out_dims, compile_with_flags,func_nam
         mlir_lower_flags = "  --convert-ta-to-it --convert-to-loops "
     # scf_lower_flags =  " --lower-affine --convert-linalg-to-loops --convert-scf-to-std --convert-linalg-to-llvm --convert-std-to-llvm "
     scf_lower_flags =  " --convert-to-llvm "
-
+    
+    if target != "cpu":
+        if target.startswith("sm_") or target.startswith("compute_") or target.startswith("lto_"):
+            if not cfg.gpu_target_enabled:
+                raise "COMET gpu target is not enabled"
+            
+            scf_lower_flags += " " + " --convert-to-triton --target=GPU --gpu-compute-capability="+target.split("_")[1]
+            mlir_lower_flags += " " + "--target=GPU"
+        elif target == "gpu":
+            if not cfg.gpu_target_enabled:
+                raise "COMET gpu target is not enabled"
+        
+            scf_lower_flags += " " + " --convert-to-triton --target=GPU"
+            mlir_lower_flags += " " + "--target=GPU"
+        else :
+            raise "Expected target formats:\
+                    cpu, compute_<version>, sm_<version>, lto_<version>"
+    
     if("-emit-ta" in mlir_lower_flags):
         print(ta_dialect_rep)
         return

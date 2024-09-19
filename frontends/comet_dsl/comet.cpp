@@ -30,7 +30,9 @@
 #include "comet/Dialect/Utils/Utils.h"
 #include "comet/Dialect/IndexTree/IR/IndexTreeDialect.h"
 #include "comet/Dialect/IndexTree/Passes.h"
+
 #include "comet/Conversion/Passes.h"
+
 #include "MLIRGen.h"
 #include "Parser.h"
 
@@ -76,6 +78,50 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
+#ifdef ENABLE_GPU_TARGET
+#include "comet/Conversion/ParallelLoopsToGpu/ParallelLoopsToGpu.h"
+#include "comet/Conversion/GpuToTriton/GpuToTritonPass.h"
+#include "comet/Conversion/TritonToCuda/TritonToCudaPass.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Conversion/TritonToTritonGPU/Passes.h"
+#include "mlir/Conversion/SCFToGPU/SCFToGPUPass.h"
+#include "mlir/Dialect/GPU/Transforms/Passes.h"
+#endif
+
+#include "mlir/Target/LLVMIR/Dialect/All.h"
+#include "mlir/Target/LLVMIR/Dialect/All.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/InitAllPasses.h"
+#include "mlir/Conversion/NVVMToLLVM/NVVMToLLVM.h"
+#include "mlir/Conversion/Passes.h"
+// #ifdef ENABLE_GPU_TARGET
+// #include "comet/TritonConfig.h"
+// #endif
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+
+int exec(const char* cmd, std::string& result) {
+    char buffer[128];
+    result = "";
+    FILE* pipe = popen(cmd, "r");
+    while (fgets(buffer, sizeof buffer, pipe) != NULL) {
+        result += buffer;
+    }
+    return pclose(pipe);
+}
+
+mlir::OwningOpRef<mlir::ModuleOp> createModuleFromString(mlir::MLIRContext &context, const std::string &moduleStr) {
+    llvm::SourceMgr sourceMgr;
+    sourceMgr.AddNewSourceBuffer(
+        llvm::MemoryBuffer::getMemBuffer(moduleStr), llvm::SMLoc());
+    
+    mlir::OwningOpRef<mlir::ModuleOp> module = mlir::parseSourceFile<mlir::ModuleOp>(sourceMgr, &context);
+    if (!module)
+        llvm::errs() << "Error: failed to parse module from string.\n";
+    
+    return module;
+}
 
 using namespace mlir::tensorAlgebra;
 using namespace mlir::indexTree;
@@ -111,6 +157,9 @@ static cl::opt<bool> emitAST("emit-ast", cl::desc("Output the AST dump"));
 static cl::opt<bool> emitTA("emit-ta", cl::desc("output the Tensor Algebra dialect dump"));
 static cl::opt<bool> emitIT("emit-it", cl::desc("output the Index Tree dialect dump"));
 static cl::opt<bool> emitLoops("emit-loops", cl::desc("output the SCF dialect dump"));
+#ifdef ENABLE_GPU_TARGET
+static cl::opt<bool> emitTriton("emit-triton", cl::desc("output the Triton dialect dump"));
+#endif
 static cl::opt<bool> emitLLVM("emit-llvm", cl::desc("output the LLVM dialect dump"));
 
 /// =============================================================================
@@ -119,11 +168,24 @@ static cl::opt<bool> emitLLVM("emit-llvm", cl::desc("output the LLVM dialect dum
 
 static cl::opt<TargetDevice> CodegenTarget("target", cl::init(CPU), cl::desc("Code generation target"), 
     cl::values(
-      clEnumVal(CPU, "Codegen target is CPU"), 
-      clEnumVal(GPU, "Codegen target is GPU"))
+      clEnumVal(CPU, "Codegen target is CPU")
+      #ifdef ENABLE_GPU_TARGET
+      , 
+      clEnumVal(GPU, "Codegen target is GPU")
+      #endif
+    )
   );
 
-
+#ifdef ENABLE_GPU_TARGET
+static cl::opt<int> GPUBlockSizeX("gpu-block-x-size", cl::init(32), cl::desc("GPU Block size in X direction"));
+static cl::opt<int> GPUBlockSizeY("gpu-block-y-size", cl::init(8), cl::desc("GPU Block size in Y direction"));
+static cl::opt<int> GPUBlockSizeR("gpu-block-r-size", cl::init(32), cl::desc("GPU Block size in R direction"));
+static cl::opt<int> GPUComputeCapability("gpu-compute-capability", cl::init(CUDA_COMPUTE_CAPABILITY), cl::desc("GPU compute capability"));
+static cl::opt<int> GPUNumWarps("gpu-num-warps", cl::init(4), cl::desc("GPU number of warps"));
+static cl::opt<int> GPUThreadsPerWarp("gpu-threads-per-warp", cl::init(32), cl::desc("GPU threads per warp"));
+static cl::opt<int> GPUNumCTAs("gpu-num-ctas", cl::init(1), cl::desc("GPU num CTAs"));
+static cl::opt<int> GPUNumStages("gpu-num-stages", cl::init(1), cl::desc("GPU num stages"));
+#endif
 
 /// =============================================================================
 /// Optimization at the TA dialect (High-level optimizations) for tensor contraction operations
@@ -182,6 +244,15 @@ static cl::opt<bool> IsLoweringtoIndexTree("convert-ta-to-it", /// Lower sparse/
 /// =============================================================================
 static cl::opt<bool> IsLoweringtoSCF("convert-to-loops",
                                      cl::desc("Output SCF dialect after lowering all operations"));
+
+#ifdef ENABLE_GPU_TARGET
+
+/// =============================================================================
+/// Lowering loops to Triton
+/// =============================================================================
+static cl::opt<bool> IsLoweringtoTriton("convert-to-triton",
+                                     cl::desc("Output Triton dialect after lowering all operations"));
+#endif
 
 /// =============================================================================
 /// Lowering to LLVM
@@ -249,6 +320,12 @@ int loadMLIR(mlir::MLIRContext &context,
 int loadAndProcessMLIR(mlir::MLIRContext &context,
                        mlir::OwningOpRef<mlir::ModuleOp> &module)
 {
+#ifdef ENABLE_GPU_TARGET
+  bool emitTriton_ = emitTriton && CodegenTarget == TargetDevice::GPU;
+#else
+  bool emitTriton_ = false;
+#endif
+
   if (int error = loadMLIR(context, module))
     return error;
 
@@ -293,7 +370,7 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
   /// Lowering of TC (tensor contraction) operation to Index Tree dialect
   /// Also performs optimization at the Index Tree dialect
   /// ===================================================================================
-  if (IsLoweringtoIndexTree || emitIT || emitLoops)
+  if (IsLoweringtoIndexTree || emitIT || emitLoops || emitTriton_ || emitLLVM)
   {
     /// Generate the index tree IR
     optPM.addPass(mlir::comet::createLowerTensorAlgebraToIndexTreePass(CodegenTarget));
@@ -358,7 +435,7 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
   /// =============================================================================
   /// Lowering all the operations to loops
   /// =============================================================================
-  if (IsLoweringtoSCF || emitLoops || emitLLVM)
+  if (IsLoweringtoSCF || emitLoops || emitTriton_ ||  emitLLVM )
   {
 
     /// Workspace transformations will create new dense tensor declarations, so we need to call createDenseTensorDeclLoweringPass
@@ -385,6 +462,7 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
     optPM.addPass(mlir::comet::createLowerIndexTreeToSCFPass());
     optPM.addPass(mlir::tensor::createTensorBufferizePass());
     pm.addPass(mlir::func::createFuncBufferizePass()); /// Needed for func
+    pm.addPass(mlir::createConvertLinalgToLoopsPass());
 
     if (OptDenseTransposeOp) /// Optimize Dense Transpose operation
     {
@@ -407,19 +485,50 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
     ///  =============================================================================
   }
 
+
+
   /// =============================================================================
   /// Late lowering passes
   /// =============================================================================
 
   optPM.addPass(mlir::comet::createSTCRemoveDeadOpsPass());
   optPM.addPass(mlir::comet::createLateLoweringPass());
-  pm.addPass(mlir::createCanonicalizerPass());
+  // pm.addPass(mlir::createCanonicalizerPass());
   optPM.addPass(mlir::createCSEPass());
+
+#ifdef ENABLE_GPU_TARGET
+  if (CodegenTarget == TargetDevice::GPU && (emitTriton_ || emitLLVM || IsLoweringtoTriton))
+  {
+    pm.addNestedPass<mlir::func::FuncOp>(mlir::comet::createConvertParallelLoopsToGpuPass(GPUBlockSizeX, GPUBlockSizeY, GPUBlockSizeR));
+    pm.addPass(mlir::createLoopInvariantCodeMotionPass());
+    pm.addPass(mlir::createParallelLoopToGpuPass());
+    pm.addPass(mlir::createGpuKernelOutliningPass());
+    pm.addPass(mlir::createCanonicalizerPass());
+    pm.addPass(mlir::comet::createConvertGpuKernelToTritonPass());
+
+    if (emitTriton_)
+    {
+      if (mlir::failed(pm.run(*module)))
+        return 4;
+      return 0;
+    }
+
+  }
+#endif
+  pm.addPass(mlir::createCanonicalizerPass());
 
   /// =============================================================================
 
   if (isLoweringToLLVM || emitLLVM)
   {
+#ifdef ENABLE_GPU_TARGET
+    if (CodegenTarget == GPU)
+    {
+      pm.addPass(mlir::comet::createLowerTritonDeviceToCudaPass(GPUNumWarps, GPUThreadsPerWarp, GPUNumCTAs, GPUNumStages, GPUComputeCapability));
+      pm.addPass(mlir::comet::createLowerGpuHostToCudaPass());
+    }
+#endif
+
     optPM.addPass(mlir::createCanonicalizerPass());
     /// Blanket-convert any remaining high-level vector ops to loops if any remain.
     pm.addNestedPass<mlir::func::FuncOp>(mlir::createConvertVectorToSCFPass());
@@ -489,6 +598,17 @@ int main(int argc, char **argv)
 
   /// If we aren't dumping the AST, then we are compiling with/to MLIR.
   /// Register our Dialect with MLIR.
+#ifdef ENABLE_GPU_TARGET
+  context.loadDialect<mlir::triton::TritonDialect>();
+  registerLLVMDialectTranslation(context);
+  registerLLVMDialectTranslation(context);
+  registerBuiltinDialectTranslation(context);
+  registerNVVMDialectTranslation(context);
+  LLVMInitializeNVPTXTargetInfo();
+  LLVMInitializeNVPTXTarget();
+  LLVMInitializeNVPTXTargetMC();
+  LLVMInitializeNVPTXAsmPrinter();
+#endif
   context.loadDialect<mlir::tensorAlgebra::TADialect>();
   context.loadDialect<mlir::indexTree::IndexTreeDialect>();
   context.loadDialect<mlir::arith::ArithDialect>();

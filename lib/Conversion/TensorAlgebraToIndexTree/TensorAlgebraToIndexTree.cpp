@@ -171,7 +171,7 @@ bool checkChosenSpGEMMOperation(const std::vector<std::vector<int64_t>> &allPerm
 Value getRealLhs(Operation *op)
 {
   assert(isa<TensorMultOp>(op) || isa<TensorElewsMultOp>(op) || isa<TensorAddOp>(op) || isa<TensorSubtractOp>(op));
-  Operation *firstUser;
+  Operation *firstUser = nullptr;
   for (auto user : op->getResult(0).getUsers())
   {
     firstUser = user;
@@ -361,7 +361,7 @@ void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree, TargetDevice 
     }
     break;
   }
-  tree->setSizeOfIteratorTypesByIndices(allIndices);  // Set the total number of iterators
+//  tree->setSizeOfIteratorTypesByIndices(allIndices);  // Set the total number of iterators
 
   auto lhsIndices = A->getIndices();
 
@@ -400,8 +400,8 @@ void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree, TargetDevice 
     /// Set the iterator type of the node
     tree->setIteratorTypeByIndex(index, std::move(iteratorType));
     node->setIteratorType(tree->getIteratorTypeByIndex(index));
-    comet_debug() << "tree: " << tree->getIteratorTypeByIndex(index)->dump() << "\n";
-    comet_debug() << "node: " << node->getIteratorType()->dump() << "\n";
+    comet_debug() << "tree: " << tree->getIteratorTypeByIndex(index)->dump() << " ptr: " << tree->getIteratorTypeByIndex(index) <<  "\n";
+    comet_debug() << "node: " << node->getIteratorType()->dump() << " ptr: " << node->getIteratorType() << "\n";
 
     parent = node;
   }
@@ -451,7 +451,7 @@ void doElementWiseOp(T op, unique_ptr<Index_Tree> &tree)
 
   /// RHS and LHS indices must be the same for elementwise multiplication
   IndicesType allIndices = tree->getIndices(rhs1_labels);
-  tree->setSizeOfIteratorTypesByIndices(allIndices); // Set the total number of iterators
+//  tree->setSizeOfIteratorTypesByIndices(allIndices); // Set the total number of iterators
 
   auto lhsIndices = A->getIndices();
   TreeNode *parent = tree->getRoot();
@@ -461,18 +461,22 @@ void doElementWiseOp(T op, unique_ptr<Index_Tree> &tree)
     auto &idomain = inputDomains.at(index);
 
     auto node = tree->addIndexNode(index, parent, idomain);
+//    unique_ptr<IteratorType> iteratorType(new IteratorType);
 
     /// If this index appears on the lhs too, set output domain for the index node
     if (std::find(lhsIndices.begin(), lhsIndices.end(), index) != lhsIndices.end())
     {
       auto &odomain = outputDomains.at(index);
       node->setOutputDomain(odomain);
+//      iteratorType->setType("parallel");
     }
 
     /// Set iterator type. Currently "default" for all elementwise operations.
     unique_ptr<IteratorType> iteratorType(new IteratorType);
     tree->setIteratorTypeByIndex(index, std::move(iteratorType));
     node->setIteratorType(tree->getIteratorTypeByIndex(index));
+    comet_debug() << "tree: " << tree->getIteratorTypeByIndex(index)->dump() << " ptr: " << tree->getIteratorTypeByIndex(index) <<  "\n";
+    comet_debug() << "node: " << node->getIteratorType()->dump() << " ptr: " << node->getIteratorType() << "\n";
     parent = node;
   }
   tree->addComputeNode(std::move(e), parent);
@@ -486,7 +490,7 @@ Operation *getSetOpForTC(Operation *op)
   assert(isa<TensorMultOp>(op) || isa<TensorElewsMultOp>(op) || isa<TensorAddOp>(op) || isa<TensorSubtractOp>(op));
   /// TODO(gkestor): fix the issue with getUsers() after getRealRhs().
   comet_debug() << "The following loop may cause issue!\n";
-  Operation *firstUser;
+  Operation *firstUser = nullptr;
   for (auto user : op->getResult(0).getUsers())
   {
     firstUser = user;
@@ -683,6 +687,9 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
       }
       else if (isa<TensorElewsMultOp>(&op))
       {
+#ifdef COMET_DEBUG_MODE
+        comet_debug() << "\n !!! doElementWiseOp<TensorElewsMultOp>\n";
+#endif
         doElementWiseOp<TensorElewsMultOp>(cast<TensorElewsMultOp>(&op), tree);
         formIndexTreeDialect = true;
       }
@@ -691,11 +698,17 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
         /// elementwise addition and subtraction
         if (isa<TensorAddOp>(&op))
         {
+#ifdef COMET_DEBUG_MODE
+          comet_debug() << "\n !!! doElementWiseOp<TensorAddOp>\n";
+#endif
           doElementWiseOp<TensorAddOp>(cast<TensorAddOp>(&op), tree);
         }
 
         if (isa<TensorSubtractOp>(&op))
         {
+#ifdef COMET_DEBUG_MODE
+          comet_debug() << "\n !!! doElementWiseOp<TensorSubtractOp>\n";
+#endif
           doElementWiseOp<TensorSubtractOp>(cast<TensorSubtractOp>(&op), tree);
         }
         formIndexTreeDialect = true;

@@ -1,0 +1,26 @@
+# RUN: comet-opt --target=GPU --convert-ta-to-it --convert-to-loops --convert-to-triton --convert-to-llvm %s &> transpose_dense_matrix.llvm
+# RUN: mlir-cpu-runner transpose_dense_matrix.llvm -O3 -e main -entry-point-result=void -shared-libs=%comet_utility_library_dir/libcomet_runner_utils%shlibext | FileCheck %s
+
+#TODO(gkestor): read dense input from file
+
+def main() {
+	#IndexLabel Declarations
+	IndexLabel [i] = [4];
+	IndexLabel [j] = [4];                     
+
+	#Tensor Declarations
+	Tensor<double> A([i, j], Dense);	  
+	Tensor<double> B([j, i], Dense);
+
+    #Tensor Readfile Operation      
+    A[i, j] = 3.2;
+
+	#Tensor Transpose
+	B[j, i] = transpose(A[i, j],{j,i});
+	print(B);
+}
+
+# Print the result for verification.
+# CHECK: data =
+# CHECK-NEXT: 3.2,3.2,3.2,3.2,3.2,3.2,3.2,3.2,3.2,3.2,3.2,3.2,3.2,3.2,3.2,3.2,
+# REQUIRES: gpu_target_enabled

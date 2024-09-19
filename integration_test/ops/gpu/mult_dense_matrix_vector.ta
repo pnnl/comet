@@ -1,0 +1,26 @@
+# RUN: comet-opt --target=GPU --convert-ta-to-it --convert-to-loops --convert-to-triton --convert-to-llvm %s &> mult_dense_matrix_vector.llvm
+# RUN: mlir-cpu-runner mult_dense_matrix_vector.llvm -O3 -e main -entry-point-result=void -shared-libs=%comet_utility_library_dir/libcomet_runner_utils%shlibext | FileCheck %s
+
+def main() {
+	#IndexLabel Declarations
+	IndexLabel [i] = [8];
+	IndexLabel [j] = [16];           
+
+	# Tensor Declarations
+	Tensor<double> A([i, j], {Dense});	  
+	Tensor<double> B([j], {Dense});
+	Tensor<double> C([i], {Dense});
+
+	# Tensor Fill Operation
+	A[i, j] = 2.3;
+	B[j] = 3.7;
+	C[i] = 0.0;
+
+	C[i] = A[i, j] * B[j];
+	print(C);
+}
+
+# Print the result for verification.
+# CHECK: data = 
+# CHECK-NEXT: 136.16,136.16,136.16,136.16,136.16,136.16,136.16,136.16,
+# REQUIRES: gpu_target_enabled

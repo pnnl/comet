@@ -238,6 +238,43 @@ class SetOp_Builder:
 
         )
 
+class ScalarOp_Builder: 
+    indentation_size = 4
+
+    scalar_op_wrapper_text = jinja2.Template (
+        ("" * indentation_size)
+        +'%t{{dest}} = "ta.scalar"({{operators}})'
+        +' <{op = "{{op}}"}> '
+        +' : ({{inputtype}})'
+        +' -> ({{outputtype}})'
+        + "\n", 
+        undefined=jinja2.StrictUndefined,
+    )
+
+    def __init__(self, data): 
+        
+        self.dest = data["out_id"]
+        self.operators = "{}".format(",".join("%t"+str(v) for v in data["operands"]))
+        self.tensors_shapes =[]
+        for l in data["shapes"]:
+            if isinstance(l, int):
+                self.tensors_shapes.append('f64')
+            else:
+                self.tensors_shapes.append('tensor<1xf64>')
+
+        self.op = data["op"]
+
+    def build_op(self):
+        input_type = []
+
+        return self.scalar_op_wrapper_text.render(
+            dest = self.dest,
+            operators = self.operators,
+            op = self.op,
+            inputtype = ",".join(self.tensors_shapes[:2]),
+            outputtype = self.tensors_shapes[-1],
+        )    
+
 class ArithOp_Builder:
     formats_str = ['Dense', 'CSR', 'COO', 'CSC']
     indentation_size = 4
@@ -583,10 +620,10 @@ class PrintBuilder:
 
     def __init__(self, data): #operand, input_labels, dtype, label_map):
         self.operand = data["operands"][0]
-        self.outtype = "x".join(str(v) for v in data["shapes"][0])
-        if len(data["shapes"][0])==1 and data["shapes"][0][0] == 1:
+        if data["shapes"] == 1 or data["shapes"] == [1]:
             self.outtype = data["value_type"]
         else:
+            self.outtype = "x".join(str(v) for v in data["shapes"][0])
             self.outtype = "tensor<{}x{}>".format(self.outtype, data["value_type"])
 
     def build_op(self):

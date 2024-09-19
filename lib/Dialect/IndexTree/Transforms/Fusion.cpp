@@ -140,7 +140,7 @@ namespace
   }; /// class IndexTreeKernelFusionPass
 } /// End anonymous namespace
 
-void IndexTreeKernelFusionPass::test(mlir::func::FuncOp &funcop)
+[[maybe_unused]] void IndexTreeKernelFusionPass::test(mlir::func::FuncOp &funcop)
 {
   int level = 0;
   funcop.walk([&](mlir::Operation *op)
@@ -351,7 +351,7 @@ mlir::Value IndexTreeKernelFusionPass::createNewTensorDecl(
   return new_dense_tensor_decl;
 }
 
-void IndexTreeKernelFusionPass::createNewTensor(
+[[maybe_unused]] void IndexTreeKernelFusionPass::createNewTensor(
     const mlir::Value &old_tensor_alloc,
     const mlir::Value &old_tensor_load,
     uint32_t rank_base,
@@ -613,7 +613,7 @@ void IndexTreeKernelFusionPass::replaceOldTensorFillOp(
   }
 }
 
-void IndexTreeKernelFusionPass::replaceOldLinalgFillOp(
+[[maybe_unused]] void IndexTreeKernelFusionPass::replaceOldLinalgFillOp(
     mlir::Value &old_tensor_alloc,
     mlir::Value &old_tensor_load,
     mlir::Value &new_tensor_load)

@@ -209,7 +209,7 @@ struct CooMatrix
       else if (nparsed == -1)
       {
         /// Problem description
-        nparsed = sscanf(line, "%lld %lld %lld", &num_rows, &num_cols, &num_nonzeros);
+        nparsed = sscanf(line, "%" PRIu64 " %" PRIu64 " %" PRIu64, &num_rows, &num_cols, &num_nonzeros);
         if ((!array) && (nparsed == 3))
         {
           if (symmetric)
@@ -237,7 +237,7 @@ struct CooMatrix
         /// Edge
         if (current_nz >= num_nonzeros)
         {
-          fprintf(stderr, "Error parsing MARKET matrix: encountered more than %lld num_nonzeros\n", num_nonzeros);
+          fprintf(stderr, "Error parsing MARKET matrix: encountered more than %" PRIu64 " num_nonzeros\n", num_nonzeros);
           exit(1);
         }
 
@@ -249,7 +249,7 @@ struct CooMatrix
         {
           if (sscanf(line, "%lf", &tempVal) != 1) /// using tempVal instead of templated T val to avoid warning
           {
-            fprintf(stderr, "Error parsing MARKET matrix: badly formed current_nz: '%s' at edge %lld\n", line, current_nz);
+            fprintf(stderr, "Error parsing MARKET matrix: badly formed current_nz: '%s' at edge %" PRIu64 "\n", line, current_nz);
             exit(1);
           }
           val = (T)tempVal;
@@ -283,7 +283,7 @@ struct CooMatrix
           row = strtol(l, &t, 0);
           if (t == l)
           {
-            fprintf(stderr, "Error parsing MARKET matrix: badly formed row at edge %lld\n", current_nz);
+            fprintf(stderr, "Error parsing MARKET matrix: badly formed row at edge %" PRIu64 "\n", current_nz);
             exit(1);
           }
           l = t;
@@ -292,7 +292,7 @@ struct CooMatrix
           col = strtol(l, &t, 0);
           if (t == l)
           {
-            fprintf(stderr, "Error parsing MARKET matrix: badly formed col at edge %lld\n", current_nz);
+            fprintf(stderr, "Error parsing MARKET matrix: badly formed col at edge %" PRIu64 "\n", current_nz);
             exit(1);
           }
           l = t;
@@ -1028,7 +1028,7 @@ struct Coo3DTensor
       if (nparsed == -1)
       {
         /// Problem description
-        nparsed = sscanf(line, "%lld %lld %lld %lld", &num_index_i, &num_index_j, &num_index_k, &num_nonzeros);
+        nparsed = sscanf(line, "%" PRIu64 " %" PRIu64 " %" PRIu64 " %" PRIu64, &num_index_i, &num_index_j, &num_index_k, &num_nonzeros);
 
         if (nparsed == 4)
         {

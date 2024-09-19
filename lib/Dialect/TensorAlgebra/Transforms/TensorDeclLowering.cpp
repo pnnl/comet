@@ -477,8 +477,8 @@ namespace
       comet_debug() << "lowerSparseOutputTensorDec::TempSparseOutputTensorDeclOp lowering\n";
     }
 
-    assert(isa<SparseOutputTensorDeclOp>(op) || isa<TempSparseOutputTensorDeclOp>(op) &&
-                                                    "Op should be either SparseOutputTensorDeclOp or TempSparseOutputTensorDeclOp");
+    assert(isa<SparseOutputTensorDeclOp>(op) || (isa<TempSparseOutputTensorDeclOp>(op) &&
+                                                    "Op should be either SparseOutputTensorDeclOp or TempSparseOutputTensorDeclOp"));
 
     comet_vdump(op);
     auto loc = op.getLoc();
@@ -1700,6 +1700,7 @@ namespace
                         tensorAlgebra::SparseOutputTensorDeclOp,
                         tensorAlgebra::TempSparseOutputTensorDeclOp,
                         tensorAlgebra::IndexLabelOp,
+                        tensorAlgebra::ScalarOp,
                         tensorAlgebra::SparseTensorConstructOp>();
 
       if (failed(applyPartialConversion(function, target, std::move(patterns))))
@@ -1793,6 +1794,7 @@ namespace
                         tensorAlgebra::IndexLabelOp,
                         tensorAlgebra::DenseConstantOp,
                         tensorAlgebra::TensorDimOp,
+                        tensorAlgebra::ScalarOp,
                         func::CallOp>();
 
       if (failed(applyPartialConversion(function, target, std::move(patterns))))
@@ -1842,6 +1844,7 @@ namespace
                         tensorAlgebra::IndexLabelOp,
                         tensorAlgebra::DenseConstantOp,
                         tensorAlgebra::TensorDimOp,
+                        tensorAlgebra::ScalarOp,
                         func::CallOp>();
 
       if (failed(applyPartialConversion(function, target, std::move(patterns))))

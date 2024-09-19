@@ -60,26 +60,26 @@ void DenseConstantOp::build(mlir::OpBuilder &builder, mlir::OperationState &stat
 /// or `false` on success. This allows for easily chaining together a set of
 /// parser rules. These rules are used to populate an `mlir::OperationState`
 /// similarly to the `build` methods described above.
-mlir::ParseResult DenseConstantOp::parse(mlir::OpAsmParser &parser,
-                                         mlir::OperationState &result)
-{
-  mlir::DenseElementsAttr value;
-  if (parser.parseOptionalAttrDict(result.attributes) ||
-      parser.parseAttribute(value, "value", result.attributes))
-    return failure();
+// mlir::ParseResult DenseConstantOp::parse(mlir::OpAsmParser &parser,
+//                                          mlir::OperationState &result)
+// {
+//   mlir::DenseElementsAttr value;
+//   if (parser.parseOptionalAttrDict(result.attributes) ||
+//       parser.parseAttribute(value, "value", result.attributes))
+//     return failure();
 
-  result.addTypes(value.getType());
-  return success();
-}
+//   result.addTypes(value.getType());
+//   return success();
+// }
 
-/// The 'OpAsmPrinter' class is a stream that allows for formatting
-/// strings, attributes, operands, types, etc.
-void DenseConstantOp::print(mlir::OpAsmPrinter &printer)
-{
-  printer << " ";
-  printer.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"value"});
-  printer << getValue();
-}
+// /// The 'OpAsmPrinter' class is a stream that allows for formatting
+// /// strings, attributes, operands, types, etc.
+// void DenseConstantOp::print(mlir::OpAsmPrinter &printer)
+// {
+//   printer << " ";
+//   printer.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"value"});
+//   printer << getValue();
+// }
 
 /// Verifier for the constant operation. This corresponds to the
 /// `let hasVerifier = 1` in the op definition.
@@ -96,9 +96,16 @@ mlir::LogicalResult DenseConstantOp::verify()
   auto attrType = getValue().getType().cast<mlir::TensorType>();
   if (attrType.getRank() != resultType.getRank())
   {
-    return emitOpError("return type must match the one of the attached value "
-                       "attribute: ")
-           << attrType.getRank() << " != " << resultType.getRank();
+    if(!(attrType.getRank() == 1 && attrType.getDimSize(0) == 1))
+    {
+      return emitOpError("return type must match the one of the attached value "
+                        "attribute: ")
+            << attrType.getRank() << " != " << resultType.getRank();
+    }
+    else
+    {
+      return mlir::success();
+    }
   }
 
   /// Check that each of the dimensions match between the two types.

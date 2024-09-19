@@ -7,9 +7,9 @@ Latest Version : v0.2
 
 Requirements:
 1. COMET backend installed on your computer
-2. python 3.6 and above
+2. python 3.8 and above
 3. numpy
-4. scipy >=1.9
+4. scipy >=1.14
 5. jinja2
 
 

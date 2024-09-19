@@ -1,3 +1,8 @@
 add_subdirectory(IndexTreeToSCF)
 add_subdirectory(TensorAlgebraToIndexTree)
 add_subdirectory(TensorAlgebraToSCF)
+if(ENABLE_GPU_TARGET)
+add_subdirectory(ParallelLoopsToGpu)
+add_subdirectory(GpuToTriton)
+add_subdirectory(TritonToCuda)
+endif()

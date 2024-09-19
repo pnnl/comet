@@ -18,6 +18,14 @@ These commands can be used to setup COMET project:
 * [Python3 (3.9 or later)](https://www.python.org/downloads/)
 * [Git (1.8.4 or later)](https://www.git-scm.com/)
 * [pkg-config (0.29.2 or later)](https://www.freedesktop.org/wiki/Software/pkg-config/)
+
+   1.a **[Optional but recommended] Create a new python environment**
+   ```bash
+   $ export PYTHON_EXECUTABLE=$(which python3.x) # Replace 3.x with your version
+   $ ${PYTHON_EXECUTABLE} -m venv "comet"
+   $ source comet/bin/activate
+   ```
+
 2) **Get submodules required for COMET.**  COMET contains LLVM and blis as a git
 submodule.  The LLVM repo here includes staged changes to MLIR which
 may be necessary to support COMET.  It also represents the version of
@@ -27,7 +35,7 @@ changed. BLIS is an award-winning portable software framework for instantiating 
 BLAS-like dense linear algebra libraries. COMET generates a call to BLIS microkernel 
 after some optimizations.
 
-```
+```bash
 $ git clone https://github.com/pnnl/COMET.git
 $ export COMET_SRC=`pwd`/COMET
 $ cd $COMET_SRC
@@ -35,17 +43,19 @@ $ git submodule init
 $ git submodule update --depth=1 # --depth=1 requires git>=1.8.4
 ```
 
-
 3) **Build and test LLVM/MLIR:**
 
-```
+```bash
+$ export PYTHON_EXECUTABLE=$(which python3.x) # Replace 3.x with your version. Skip if already run in step 1.a
 $ cd $COMET_SRC
 $ mkdir llvm/build
 $ cd llvm/build
+# NVPTX is only required if targetting Nvidia GPUs
 $ cmake -G Ninja ../llvm \
     -DLLVM_ENABLE_PROJECTS="mlir;openmp;clang" \
-    -DLLVM_TARGETS_TO_BUILD="AArch64;X86" \
+    -DLLVM_TARGETS_TO_BUILD="AArch64;X86;NVPTX" \
     -DCMAKE_OSX_ARCHITECTURES="arm64" \
+    -DPython3_EXECUTABLE=${PYTHON_EXECUTABLE} \
     -DLLVM_ENABLE_ASSERTIONS=ON \
     -DCMAKE_BUILD_TYPE=Release
 $ ninja
@@ -54,14 +64,14 @@ $ ninja check-mlir
 
 4) **Apply BLIS patch to meet COMET requirements:**
 
-```
+```bash
 $ cd $COMET_SRC
 $ patch -s -p0 < comet-blis.patch
 ```
 
 5) **Build and test BLIS:**
 
-```
+```bash
 $ cd $COMET_SRC
 $ cd blis
 $ ./configure --prefix=$COMET_SRC/install --disable-shared auto
@@ -70,15 +80,29 @@ $ make check [-j]
 $ make install [-j]
 ```
 
-6) **Build and test COMET:**
+6) **(If targetting GPUs) Patch Triton:**
 
+```bash
+$ cd $COMET_SRC
+$ cd triton
+$ git apply ${COMET_SRC}/triton.patch
 ```
+
+7) **Build and test COMET:**
+
+```bash
 $ cd $COMET_SRC
 $ mkdir build
 $ cd build
+# Omit -DENABLE_GPU_TARGET, -DCUDA_COMPUTE_CAPABILITY and -DTRITON_PATH
+# if only targetting CPUs
+# In -DCUDA_COMPUTE_CAPABILITY=70 replace 70 with the desired value
 $ cmake -G Ninja .. \
     -DMLIR_DIR=$PWD/../llvm/build/lib/cmake/mlir \
     -DLLVM_DIR=$PWD/../llvm/build/lib/cmake/llvm \
+    -DENABLE_GPU_TARGET=ON \
+    -DCUDA_COMPUTE_CAPABILITY=70 \
+    -DTRITON_PATH=$PWD/../triton/ \
     -DLLVM_ENABLE_ASSERTIONS=ON \
     -DCMAKE_BUILD_TYPE=Release
 $ ninja

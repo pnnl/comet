@@ -104,6 +104,9 @@ namespace
           comet_vdump(alloc_op);
           alloc = alloc_op;
         }
+        else {
+          alloc = rewriter.create<memref::AllocOp>(loc, memRefType);
+        }
       }
       else
       {
@@ -114,55 +117,64 @@ namespace
       /// Create these constants up-front to avoid large amounts of redundant
       /// operations.
       auto valueShape = memRefType.getShape();
-      SmallVector<Value, 8> constantIndices;
-
-      if (!valueShape.empty())
+      auto constTensor = op.getValue().getType().cast<mlir::TensorType>();
+      if(constTensor.getRank() == 1 && constTensor.getDimSize(0) == 1)
       {
-        for (auto i : llvm::seq<int64_t>(
-                 0, *std::max_element(valueShape.begin(), valueShape.end())))
-          constantIndices.push_back(rewriter.create<ConstantIndexOp>(loc, i));
+        auto float_attr = *constantValue.getValues<FloatAttr>().begin();
+        auto f_val = float_attr.getValue();
+        auto val = rewriter.create<ConstantFloatOp>(op->getLoc(), f_val, rewriter.getF64Type());
+        rewriter.create<linalg::FillOp>(op->getLoc(), ValueRange(val), ValueRange(alloc));
       }
-      else
+      else 
       {
-        /// This is the case of a tensor of rank 0.
-        constantIndices.push_back(rewriter.create<ConstantIndexOp>(loc, 0));
+        SmallVector<Value, 8> constantIndices;
+
+        if (!valueShape.empty())
+        {
+          for (auto i : llvm::seq<int64_t>(
+                  0, *std::max_element(valueShape.begin(), valueShape.end())))
+            constantIndices.push_back(rewriter.create<ConstantIndexOp>(loc, i));
+        }
+        else
+        {
+          /// This is the case of a tensor of rank 0.
+          constantIndices.push_back(rewriter.create<ConstantIndexOp>(loc, 0));
+        }
+        /// The constant operation represents a multi-dimensional constant, so we
+        /// will need to generate a store for each of the elements. The following
+        /// functor recursively walks the dimensions of the constant shape,
+        /// generating a store when the recursion hits the base case.
+        SmallVector<Value, 2> indices;
+        auto valueIt = constantValue.getValues<FloatAttr>().begin();
+        std::function<void(uint64_t)> storeElements = [&](uint64_t dimension)
+        {
+          /// The last dimension is the base case of the recursion, at this point
+          /// we store the element at the given index.
+          if (dimension == valueShape.size())
+          {
+            rewriter.create<memref::StoreOp>(
+                loc, rewriter.create<ConstantOp>(loc, *valueIt++), alloc,
+                llvm::ArrayRef(indices));
+            return;
+          }
+
+          /// Otherwise, iterate over the current dimension and add the indices to
+          /// the list.
+          for (uint64_t i = 0, e = valueShape[dimension]; i != e; ++i)
+          {
+            indices.push_back(constantIndices[i]);
+            storeElements(dimension + 1);
+            indices.pop_back();
+          }
+        };
+
+        /// Start the element storing recursion from the first dimension.
+        storeElements(/*dimension=*/0);
       }
-
-      /// The constant operation represents a multi-dimensional constant, so we
-      /// will need to generate a store for each of the elements. The following
-      /// functor recursively walks the dimensions of the constant shape,
-      /// generating a store when the recursion hits the base case.
-      SmallVector<Value, 2> indices;
-      auto valueIt = constantValue.getValues<FloatAttr>().begin();
-      std::function<void(uint64_t)> storeElements = [&](uint64_t dimension)
-      {
-        /// The last dimension is the base case of the recursion, at this point
-        /// we store the element at the given index.
-        if (dimension == valueShape.size())
-        {
-          rewriter.create<memref::StoreOp>(
-              loc, rewriter.create<ConstantOp>(loc, *valueIt++), alloc,
-              llvm::ArrayRef(indices));
-          return;
-        }
-
-        /// Otherwise, iterate over the current dimension and add the indices to
-        /// the list.
-        for (uint64_t i = 0, e = valueShape[dimension]; i != e; ++i)
-        {
-          indices.push_back(constantIndices[i]);
-          storeElements(dimension + 1);
-          indices.pop_back();
-        }
-      };
-
-      /// Start the element storing recursion from the first dimension.
-      storeElements(/*dimension=*/0);
 
       /// Replace this operation with the generated alloc.
-      op.replaceAllUsesWith(alloc);
+      op->replaceAllUsesWith(rewriter.create<ToTensorOp>(op->getLoc(),alloc));
       rewriter.eraseOp(op);
-
       comet_debug() << "ConstantOpLowering ends\n";
       return success();
     }
@@ -621,25 +633,33 @@ namespace
       comet_vdump(rhs);
       comet_vdump(lhs);
 
-      auto rhsType = op->getOperand(0).getType();
-      auto lhsType = op->getOperand(1).getType();
+      // auto rh = op->getOperand(0).getType();
+      // auto lh = op->getOperand(1).getType();
 
       [[maybe_unused]] auto f64Type = rewriter.getF64Type();
       Value const_index_0 = rewriter.create<ConstantIndexOp>(loc, 0);
       comet_vdump(const_index_0);
       std::vector<Value> alloc_zero_loc = {const_index_0};
 
-      if (rhsType.isa<MemRefType>())
+      if (auto toTensorOp = llvm::dyn_cast_if_present<ToTensorOp>(rhs.getDefiningOp()))
       {
-        comet_debug() << "RHS is a tensor\n";
-        rhs = rewriter.create<memref::LoadOp>(loc, rhs, alloc_zero_loc);
-        comet_vdump(rhs);
+        rhs = toTensorOp.getMemref();
+        // comet_debug() << "RHS is a tensor\n";
+        // rhs = rewriter.create<memref::LoadOp>(loc, rhs, alloc_zero_loc);
+        // comet_vdump(rhs);
       }
-      if (lhsType.isa<MemRefType>())
+      if (auto toTensorOp = llvm::dyn_cast_if_present<ToTensorOp>(lhs.getDefiningOp()))
       {
-        comet_debug() << "LHS is a tensor\n";
-        lhs = rewriter.create<memref::LoadOp>(loc, lhs, alloc_zero_loc);
+        lhs = toTensorOp.getMemref();
+        // comet_debug() << "RHS is a tensor\n";
+        // rhs = rewriter.create<memref::LoadOp>(loc, rhs, alloc_zero_loc);
+        // comet_vdump(rhs);
       }
+      // if (lhsType.isa<MemRefType>())
+      // {
+      //   comet_debug() << "LHS is a tensor\n";
+      //   lhs = rewriter.create<memref::LoadOp>(loc, lhs, alloc_zero_loc);
+      // }
 
       Value res;
       bool res_comes_from_setop = false;
@@ -649,7 +669,18 @@ namespace
         comet_pdump(u);
         if (isa<tensorAlgebra::TensorSetOp>(u))
         {
+          // u->dump();
+          // u->getBlock()->dump();
           res = cast<tensorAlgebra::TensorSetOp>(u).getOperation()->getOperand(1);
+          // (++res.getUsers().begin())->dump();
+          if(!res.getUsers().empty() &&  isa<TensorSetOp>(*(++res.getUsers().begin())))
+          {
+            res = cast<tensorAlgebra::TensorSetOp>(*(++res.getUsers().begin())).getRhs();
+          }
+          if(auto toTensor = mlir::dyn_cast_or_null<ToTensorOp>(res.getDefiningOp()))
+          {
+            res = toTensor.getMemref();
+          }
           comet_debug() << "Result from SetOp:\n";
           comet_vdump(res);
           res_comes_from_setop = true;
@@ -672,19 +703,23 @@ namespace
       Value res_val;
       if (op_attr.compare("+") == 0)
       {
-        res_val = rewriter.create<AddFOp>(loc, rhs, lhs);
+        rewriter.create<linalg::AddOp>(loc, ValueRange{lhs, rhs}, ValueRange(res));
+        // res_val = rewriter.create<AddFOp>(loc, lhs, rhs);
       }
       else if (op_attr.compare("-") == 0)
       {
-        res_val = rewriter.create<SubFOp>(loc, lhs, rhs);
+        rewriter.create<linalg::SubOp>(loc, ValueRange{lhs, rhs}, ValueRange(res));
+        // res_val = rewriter.create<SubFOp>(loc, lhs, rhs);
       }
       else if (op_attr.compare("*") == 0)
       {
-        res_val = rewriter.create<MulFOp>(loc, rhs, lhs);
+        rewriter.create<linalg::MulOp>(loc, ValueRange{lhs, rhs}, ValueRange(res));
+        // res_val = rewriter.create<MulFOp>(loc, lhs, rhs);
       }
       else if (op_attr.compare("/") == 0)
       {
-        res_val = rewriter.create<DivFOp>(loc, lhs, rhs);
+        rewriter.create<linalg::DivOp>(loc, ValueRange{lhs, rhs}, ValueRange(res));
+        // res_val = rewriter.create<DivFOp>(loc, lhs, rhs);
       }
       else
       {
@@ -693,7 +728,8 @@ namespace
 
       comet_vdump(res_val);
       /// store res_val to res
-      [[maybe_unused]] auto storeOp = rewriter.create<memref::StoreOp>(loc, res_val, res, alloc_zero_loc);
+      // rewriter.create<linalg::CopyOp>(loc, res_val, res);
+      // [[maybe_unused]] auto storeOp = rewriter.create<memref::StoreOp>(loc, res_val, res, alloc_zero_loc);
       comet_vdump(storeOp);
 
       op.replaceAllUsesWith(res);

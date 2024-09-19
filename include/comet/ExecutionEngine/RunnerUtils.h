@@ -301,4 +301,20 @@ void cometSortIndex(UnrankedMemRefType<T> &M, int64_t index_first, int64_t index
 {
     RTSortIndex(DynamicMemRefType<T>(M), index_first, index_last);
 }
+
+#ifdef ENABLE_GPU_TARGET
+extern "C" COMET_RUNNERUTILS_EXPORT void cudaSetModuleImage(char* ptx);
+extern "C" COMET_RUNNERUTILS_EXPORT int64_t cudaMallocF64(int64_t size);
+extern "C" COMET_RUNNERUTILS_EXPORT int64_t cudaMallocF32(int64_t size);
+extern "C" COMET_RUNNERUTILS_EXPORT int64_t cudaMallocI64(int64_t size);
+extern "C" COMET_RUNNERUTILS_EXPORT int64_t cudaMallocI32(int64_t size);
+extern "C" COMET_RUNNERUTILS_EXPORT void cudaFree(int64_t ptr);
+extern "C" COMET_RUNNERUTILS_EXPORT void cudaMemcpyI64(int64_t device, void* ptr, void* aligned_ptr, int64_t offset, int64_t size, int64_t stride, int64_t direction);
+extern "C" COMET_RUNNERUTILS_EXPORT void cudaMemcpyF64(int64_t device, void* ptr, void* aligned_ptr, int64_t offset, int64_t size, int64_t stride, int64_t direction);
+extern "C" COMET_RUNNERUTILS_EXPORT void cudaMemcpyI32(int64_t device, void* ptr, void* aligned_ptr, int64_t offset, int64_t size, int64_t stride, int64_t direction);
+extern "C" COMET_RUNNERUTILS_EXPORT void cudaMemcpyF32(int64_t device, void* ptr, void* aligned_ptr, int64_t offset, int64_t size, int64_t stride, int64_t direction);
+extern "C" COMET_RUNNERUTILS_EXPORT void cudaLaunchKernel(int64_t realblocksX, int64_t realblocksY, int64_t realblocksZ, int64_t tritonBlockX, int64_t tritonBlockY, int64_t tritonBlockZ, void* ptr, void* aligned_ptr, int64_t offset, int64_t size, int64_t stride, char* kernel, int64_t kernel_name_size, int64_t sharedMem, int64_t numWraps, int64_t threadsPerWarp);
+#endif
+
+
 #endif /// COMET_EXECUTIONENGINE_RUNNERUTILS_H_

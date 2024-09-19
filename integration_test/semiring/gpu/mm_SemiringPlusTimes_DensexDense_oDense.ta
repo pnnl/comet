@@ -1,0 +1,28 @@
+# RUN: comet-opt --target=GPU --convert-ta-to-it --convert-to-loops --convert-to-triton --convert-to-llvm %s &> mm_SemiringPlusTimes_DensexDense_oDense.llvm
+# RUN: mlir-cpu-runner mm_SemiringPlusTimes_DensexDense_oDense.llvm -O3 -e main -entry-point-result=void -shared-libs=%comet_utility_library_dir/libcomet_runner_utils%shlibext | FileCheck %s
+
+
+def main() {
+	#IndexLabel Declarations
+	IndexLabel [i] = [8];
+	IndexLabel [j] = [4];  
+	IndexLabel [k] = [2];           
+
+	#Tensor Declarations
+	Tensor<double> A([i, j], {Dense});	  
+	Tensor<double> B([j, k], {Dense});
+	Tensor<double> C([i, k], {Dense});
+
+	#Tensor Fill Operation
+	A[i, j] = 2.2;
+	B[j, k] = 3.4;
+	C[i, k] = 0.0;
+
+	C[i, k] = A[i, j] @(+,*) B[j, k];
+	print(C);
+}
+
+# Print the result for verification.
+# CHECK: data = 
+# CHECK-NEXT: 29.92,29.92,29.92,29.92,29.92,29.92,29.92,29.92,29.92,29.92,29.92,29.92,29.92,29.92,29.92,29.92,
+# REQUIRES: gpu_target_enabled

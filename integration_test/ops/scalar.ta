@@ -1,0 +1,15 @@
+# RUN: comet-opt --convert-to-loops --convert-to-llvm %s &> scalars.llvm
+# RUN: mlir-cpu-runner scalars.llvm -O3 -e main -entry-point-result=void -shared-libs=%comet_utility_library_dir/libcomet_runner_utils%shlibext | FileCheck %s
+
+def main() {
+    var a = 5 + 1;
+    var b = a + 5 + 1;
+    var c = b / 2;
+    var d = c * 3;
+    var e = d - 1;
+	print(e);
+}
+
+# Print the result for verification.
+# CHECK: data = 
+# CHECK-NEXT: 17,

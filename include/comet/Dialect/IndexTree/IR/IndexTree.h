@@ -31,7 +31,9 @@
 #include "comet/Dialect/IndexTree/Transforms/Tensor.h"
 
 #include "mlir/IR/Location.h"
-
+// #define COMET_DEBUG_MODE
+#include "comet/Utils/debug.h"
+#undef COMET_DEBUG_MODE
 class Index_Tree;
 class IteratorType;
 
@@ -45,7 +47,7 @@ public:
   IterDomain *inputDomain = nullptr;
   IterDomain *outputDomain = nullptr;
   int id = 0;                 /// The location in Index_Tree's vector of nodes.
-  IteratorType *iteratorType; /// Used for IndexTreeIndicesOp, to tell if an index can be parallelized
+  IteratorType *iteratorType = nullptr; /// Used for IndexTreeIndicesOp, to tell if an index can be parallelized
 
 public:
   TreeNode() = default;
@@ -208,7 +210,7 @@ class Index_Tree
   std::map<void *, unique_ptr<Tensor>> valueToTensor;
   std::map<void *, int> indexLabelToId;
 //  std::vector<unique_ptr<IteratorType>> iteratorTypes; /// Iterator types of all iterators, referred by the indices
-  std::unordered_map<int, unique_ptr<IteratorType>> iteratorTypes; /// Iterator types of all iterators, referred by the indices
+  std::unordered_map<size_t, unique_ptr<IteratorType>> iteratorTypes; /// Iterator types of all iterators, referred by the indices
   unsigned int indexID = 0;
 
 public:
@@ -307,11 +309,18 @@ public:
     return nodes[id].get();
   }
 
-  void setSizeOfIteratorTypesByIndices(IndicesType allIndices);
+//  void setSizeOfIteratorTypesByIndices(IndicesType allIndices);
 
   void setIteratorTypeByIndex(size_t index, unique_ptr<IteratorType> type)
   {
-    iteratorTypes[index] = std::move(type);
+    if (iteratorTypes.find(index) == iteratorTypes.end())
+    {
+      iteratorTypes[index] = std::move(type);
+    }
+    else
+    {
+      comet_debug() << "WARNING: Trying to set iterator type of index that has already been set. Ignoring\n";
+    }
   }
 
   IteratorType *getIteratorTypeByIndex(size_t index)
@@ -332,7 +341,10 @@ private:
   std::string type = "default";
 
 public:
-  IteratorType() = default;
+  IteratorType()
+  {
+    type = "default";
+  }
 
   IteratorType(std::string type)
   {
