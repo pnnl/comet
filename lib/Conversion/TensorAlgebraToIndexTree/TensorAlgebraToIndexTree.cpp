@@ -139,14 +139,19 @@ bool checkChosenDenseMixedOperations(const std::vector<std::vector<int64_t>> &al
 bool checkChosenSpGEMMOperation(const std::vector<std::vector<int64_t>> &allPerms,
                                 const std::vector<std::vector<std::string>> &allFormats)
 {
-  if (allPerms.size() != 3)
+  if (allPerms.size() != 3 || allFormats.size() != 3)
   {
     return false;
   }
 
   /// The output tensor should be sparse.
   auto lhs_formats = allFormats[2];
-  if (!(lhs_formats[0] == "D" && lhs_formats[1] == "CU")) {
+  if (lhs_formats.size() != 2)
+  {
+    return false;
+  }
+  if (!(lhs_formats[0] == "D" && lhs_formats[1] == "CU"))
+  {
     return false;
   }
 
@@ -155,7 +160,8 @@ bool checkChosenSpGEMMOperation(const std::vector<std::vector<int64_t>> &allPerm
   const std::vector<int64_t> &rhs2_perms = allPerms[1];
   const std::vector<int64_t> &lhs_perms = allPerms[2];
 
-  if (rhs1_perms.size() == 2 && rhs2_perms.size() == 2 && lhs_perms.size() == 2) {
+  if (rhs1_perms.size() == 2 && rhs2_perms.size() == 2 && lhs_perms.size() == 2)
+  {
     /// SpGEMM is C[i,j] = A[i,k] * B[k,j]
     if (rhs1_perms[0] == lhs_perms[0] &&
         rhs1_perms[1] == rhs2_perms[0] &&
