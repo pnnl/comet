@@ -70,7 +70,8 @@ namespace
  * dense matrix-matrix multiplication (MM),
  * dense matrix-vector multiplication (MV),
  * sparse matrix-dense matrix multiplication (SpMM),
- * sparse matrix-dense vector multiplication (SpMV)
+ * sparse matrix-dense vector multiplication (SpMV),
+ * dense elementwise operations.
  *
  * @param allPerms allPerms from the operation. For example, [[d0, d1], [d1, d2], [d0, d2]]. RHS is allPerms[0,1], LHS is allPerms[2].
  * @param allFormats allFormats from the operation; the same size with allPerms. For example, [["D", "D"], ["D", "CU"], ["D", "D"]]. RHS is allFormats[0,1], LHS is allFormats[2].
@@ -110,6 +111,14 @@ bool checkChosenDenseMixedOperations(const std::vector<std::vector<int64_t>> &al
           rhs2_perms[1] == lhs_perms[1])
       {
         /// Then op is MM or SpMM
+        return true;
+      }
+      if (rhs1_perms[0] == rhs2_perms[0] &&
+          rhs1_perms[1] == rhs2_perms[1] &&
+          lhs_perms[0] == rhs1_perms[0] &&
+          lhs_perms[1] == rhs1_perms[1])
+      {
+        /// Then op is elementwise matrix-matrix operations.
         return true;
       }
     }
@@ -363,13 +372,13 @@ void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree, TargetDevice 
       allIndices = getUnion(rhs1_indices, rhs2_indices);
       available_parallel_iterators = 1;   /// For CPU, only allow one-level parallel for-loop (i.e., no nested parallelism).
     }
-    break;
+      break;
     case mlir::tensorAlgebra::GPU:
     {
       allIndices = gpuIndices(rhs1_indices, rhs2_indices);
       available_parallel_iterators = 2;  /// TODO(zhen.peng): For GPU, it needs further consideration if the number of parallel iterators should be 2 or 3.
     }
-    break;
+      break;
   }
 //  tree->setSizeOfIteratorTypesByIndices(allIndices);  // Set the total number of iterators
 
@@ -420,7 +429,7 @@ void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree, TargetDevice 
 }
 
 template <typename T>
-void doElementWiseOp(T op, unique_ptr<Index_Tree> &tree)
+void doElementWiseOp(T op, unique_ptr<Index_Tree> &tree, TargetDevice device = CPU)
 {
   std::vector<mlir::Value> rhs1_labels = op.getRhs1IndexLabels();
   std::vector<mlir::Value> rhs2_labels = op.getRhs2IndexLabels();
@@ -445,6 +454,9 @@ void doElementWiseOp(T op, unique_ptr<Index_Tree> &tree)
 
   assert(allPerms.size() == 3);
 
+  /// If the operation is one of the chosen operations, then record output indices as parallel interators.
+  bool is_chosen_dense_mixed_operations = checkChosenDenseMixedOperations(allPerms, allFormats);
+
   auto B = tree->getOrCreateTensor(rhs1_tensor, rhs1_labels, allFormats[0]);
   auto C = tree->getOrCreateTensor(rhs2_tensor, rhs2_labels, allFormats[1]);
   auto A = tree->getOrCreateTensor(lhs_tensor, lhs_labels, allFormats[2]);
@@ -462,6 +474,20 @@ void doElementWiseOp(T op, unique_ptr<Index_Tree> &tree)
   /// RHS and LHS indices must be the same for elementwise multiplication
   IndicesType allIndices = tree->getIndices(rhs1_labels);
 //  tree->setSizeOfIteratorTypesByIndices(allIndices); // Set the total number of iterators
+  int available_parallel_iterators = 0;  /// The number of parallel iterators (Index Nodes); architecture dependent.
+  switch (device)
+  {
+    case mlir::tensorAlgebra::CPU:
+    {
+      available_parallel_iterators = 1;   /// For CPU, only allow one-level parallel for-loop (i.e., no nested parallelism).
+    }
+      break;
+    case mlir::tensorAlgebra::GPU:
+    {
+      available_parallel_iterators = 2;  /// TODO(zhen.peng): For GPU, it needs further consideration if the number of parallel iterators should be 2 or 3.
+    }
+      break;
+  }
 
   auto lhsIndices = A->getIndices();
   TreeNode *parent = tree->getRoot();
@@ -474,15 +500,23 @@ void doElementWiseOp(T op, unique_ptr<Index_Tree> &tree)
 //    unique_ptr<IteratorType> iteratorType(new IteratorType);
 
     /// If this index appears on the lhs too, set output domain for the index node
+    /// and also set the index as a parallel iterator
+    unique_ptr<IteratorType> iteratorType(new IteratorType);
+    comet_debug() << iteratorType->dump() << "\n";
     if (std::find(lhsIndices.begin(), lhsIndices.end(), index) != lhsIndices.end())
     {
       auto &odomain = outputDomains.at(index);
       node->setOutputDomain(odomain);
-//      iteratorType->setType("parallel");
+      if (is_chosen_dense_mixed_operations && available_parallel_iterators)
+      {
+        /// If the operation is one of the chosen ones, and the index appears on the lhs,
+        /// then the index has "parallel" as its iterator type.
+        iteratorType->setType("parallel");
+        --available_parallel_iterators;
+      }
     }
 
-    /// Set iterator type. Currently "default" for all elementwise operations.
-    unique_ptr<IteratorType> iteratorType(new IteratorType);
+    /// Set iterator type.
     tree->setIteratorTypeByIndex(index, std::move(iteratorType));
     node->setIteratorType(tree->getIteratorTypeByIndex(index));
     comet_debug() << "tree: " << tree->getIteratorTypeByIndex(index)->dump() << " ptr: " << tree->getIteratorTypeByIndex(index) <<  "\n";
@@ -700,7 +734,7 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
 #ifdef COMET_DEBUG_MODE
         comet_debug() << "\n !!! doElementWiseOp<TensorElewsMultOp>\n";
 #endif
-        doElementWiseOp<TensorElewsMultOp>(cast<TensorElewsMultOp>(&op), tree);
+        doElementWiseOp<TensorElewsMultOp>(cast<TensorElewsMultOp>(&op), tree, device);
         formIndexTreeDialect = true;
       }
       else if (isa<TensorAddOp>(&op) || isa<TensorSubtractOp>(&op))
@@ -711,7 +745,7 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
 #ifdef COMET_DEBUG_MODE
           comet_debug() << "\n !!! doElementWiseOp<TensorAddOp>\n";
 #endif
-          doElementWiseOp<TensorAddOp>(cast<TensorAddOp>(&op), tree);
+          doElementWiseOp<TensorAddOp>(cast<TensorAddOp>(&op), tree, device);
         }
 
         if (isa<TensorSubtractOp>(&op))
@@ -719,7 +753,7 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
 #ifdef COMET_DEBUG_MODE
           comet_debug() << "\n !!! doElementWiseOp<TensorSubtractOp>\n";
 #endif
-          doElementWiseOp<TensorSubtractOp>(cast<TensorSubtractOp>(&op), tree);
+          doElementWiseOp<TensorSubtractOp>(cast<TensorSubtractOp>(&op), tree, device);
         }
         formIndexTreeDialect = true;
       }
