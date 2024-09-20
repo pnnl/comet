@@ -11,9 +11,10 @@
 
 # L is a the strictly lower triangular parts of the symmetrix matrix A.
 
-# RUN: comet-opt --opt-comp-workspace --convert-ta-to-it --convert-to-loops --convert-to-llvm %s &> triangleCount_SandiaLL.mask.llvm
+# RUN: comet-opt --opt-comp-workspace --convert-ta-to-it --convert-to-loops %s &> triangleCount_SandiaLL.mask.SCF.mlir
+# RUN: mlir-opt --convert-linalg-to-loops --lower-affine --convert-scf-to-openmp --finalize-memref-to-llvm --convert-scf-to-cf --convert-cf-to-llvm --convert-func-to-llvm --convert-index-to-llvm --convert-openmp-to-llvm --convert-vector-to-llvm --canonicalize --convert-to-llvm triangleCount_SandiaLL.mask.SCF.mlir &> triangleCount_SandiaLL.mask.llvm
 # RUN: export SPARSE_FILE_NAME0=%comet_integration_test_data_dir/tc.mtx
-# RUN: mlir-cpu-runner triangleCount_SandiaLL.mask.llvm -O3 -e main -entry-point-result=void -shared-libs=%comet_utility_library_dir/libcomet_runner_utils%shlibext | FileCheck %s
+# RUN: mlir-cpu-runner triangleCount_SandiaLL.mask.llvm -O3 -e main -entry-point-result=void -shared-libs=%comet_utility_library_dir/libcomet_runner_utils%shlibext,%mlir_utility_library_dir/libomp%shlibext | FileCheck %s
 
 def main() {
     #IndexLabel Declarations

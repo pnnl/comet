@@ -1,9 +1,10 @@
 # Sparse matrix sparse matrix multiplication
 # Sparse matrix is in CSR format. Currently workspace transformation on the IndexTree dialect works for only CSR format
-# RUN: comet-opt --opt-comp-workspace --convert-ta-to-it --convert-to-loops --convert-to-llvm %s &> spgemm_w_compressed_workspace.llvm
+# RUN: comet-opt --opt-comp-workspace --convert-ta-to-it --convert-to-loops %s &> spgemm_w_compressed_workspace.SCF.mlir
+# RUN: mlir-opt --convert-linalg-to-loops --lower-affine --convert-scf-to-openmp --finalize-memref-to-llvm --convert-scf-to-cf --convert-cf-to-llvm --convert-func-to-llvm --convert-index-to-llvm --convert-openmp-to-llvm --convert-vector-to-llvm --canonicalize --convert-to-llvm spgemm_w_compressed_workspace.SCF.mlir &> spgemm_w_compressed_workspace.llvm
 # RUN: export SPARSE_FILE_NAME0=%comet_integration_test_data_dir/test_rank2.mtx
 # RUN: export SPARSE_FILE_NAME1=%comet_integration_test_data_dir/test_rank2.mtx
-# RUN: mlir-cpu-runner spgemm_w_compressed_workspace.llvm -O3 -e main -entry-point-result=void -shared-libs=%comet_utility_library_dir/libcomet_runner_utils%shlibext | FileCheck %s
+# RUN: mlir-cpu-runner spgemm_w_compressed_workspace.llvm -O3 -e main -entry-point-result=void -shared-libs=%comet_utility_library_dir/libcomet_runner_utils%shlibext,%mlir_utility_library_dir/libomp%shlibext | FileCheck %s
 
 
 def main() {

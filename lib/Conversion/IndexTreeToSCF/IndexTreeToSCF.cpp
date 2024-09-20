@@ -447,9 +447,17 @@ namespace
                                     ValueRange{i_idx});
     comet_vdump(init_forLoop);
 
-    /// Deallocate mark_array at the end of omp.parallel
-    builder.setInsertionPoint(symbolicInfo.omp_terminator_op);
-    builder.create<memref::DeallocOp>(loc, mark_array);
+    if (symbolicInfo.omp_terminator_op)
+    {
+      /// Deallocate mark_array at the end of omp.parallel
+      builder.setInsertionPoint(symbolicInfo.omp_terminator_op);
+      builder.create<memref::DeallocOp>(loc, mark_array);
+    }
+    else
+    {
+      builder.setInsertionPointAfter(outermost_forLoop);
+      builder.create<memref::DeallocOp>(loc, mark_array);
+    }
   }
 
 
@@ -1785,13 +1793,14 @@ namespace
       {
         Value s = builder.create<memref::LoadOp>(loc, W_data, allValueAccessIdx[m]);
         allLoadsElse[m] = s;
+        comet_vdump(s);
       }
       else   /// Not W_data
       {
         Value s = builder.create<memref::LoadOp>(loc, main_tensors_all_Allocs[m].back(), allValueAccessIdx[m]);
         allLoadsElse[m] = s;
+        comet_vdump(s);
       }
-      comet_vdump(s);
     }
     comet_debug() << " allLoadsElse.size(): " << allLoadsElse.size() << "\n";
 
@@ -1843,9 +1852,16 @@ namespace
                                     bitmap_alloc,
                                     ValueRange{i_idx});
 
-    /// Deallocate bitmap at the end of omp.parallel
-    builder.setInsertionPoint(numericInfo.omp_terminator_op);
-    builder.create<memref::DeallocOp>(loc, bitmap_alloc);
+    if (numericInfo.omp_terminator_op)
+    {
+      /// Deallocate bitmap at the end of omp.parallel
+      builder.setInsertionPoint(numericInfo.omp_terminator_op);
+      builder.create<memref::DeallocOp>(loc, bitmap_alloc);
+    }
+    /// else this is done in the genWorkspaceCmptOpGatherFromWorkspaceToOutput() by
+    ///       builder.setInsertionPointAfter(parent_for_loop);
+    ///      builder.create<memref::DeallocOp>(loc, ws_data);
+    ///      builder.create<memref::DeallocOp>(loc, ws_bitmap);
 
     {
       comet_vdump(bitmap_alloc);
@@ -1876,9 +1892,16 @@ namespace
                                                         builder.getI64IntegerAttr(8) /* alignment bytes */);
     numericInfo.W_data_alloc = W_data_alloc;
 
-    /// Deallocate W_data_alloc at the end of omp.parallel
-    builder.setInsertionPoint(numericInfo.omp_terminator_op);
-    builder.create<memref::DeallocOp>(loc, W_data_alloc);
+    if (numericInfo.omp_terminator_op)
+    {
+      /// Deallocate W_data_alloc at the end of omp.parallel
+      builder.setInsertionPoint(numericInfo.omp_terminator_op);
+      builder.create<memref::DeallocOp>(loc, W_data_alloc);
+    }
+    /// else this is done in the genWorkspaceCmptOpGatherFromWorkspaceToOutput() by
+    ///       builder.setInsertionPointAfter(parent_for_loop);
+    ///      builder.create<memref::DeallocOp>(loc, ws_data);
+    ///      builder.create<memref::DeallocOp>(loc, ws_bitmap);
 
     {
       comet_vdump(W_data_alloc);
@@ -3389,15 +3412,20 @@ namespace
                                       ValueRange{valueAccessIdx});
     }
     /// W_id_list_size += 1;
-
+    comet_vdump(W_id_list_size);
     Value const_index_0 = builder.create<ConstantIndexOp>(loc, 0);
+    comet_vdump(const_index_0);
     Value const_index_1 = builder.create<ConstantIndexOp>(loc, 1);
+    comet_vdump(const_index_1);
     Value old_val = builder.create<memref::LoadOp>(loc, W_id_list_size, ValueRange{const_index_0});
+    comet_vdump(old_val);
     Value new_val = builder.create<AddIOp>(loc, old_val, const_index_1);
+    comet_vdump(new_val);
     builder.create<memref::StoreOp>(loc,
                                     new_val,
                                     W_id_list_size,
                                     ValueRange{const_index_0});
+    comet_vdump(W_id_list_size);
 
     {
       comet_vdump(if_statement);
@@ -3810,13 +3838,18 @@ namespace
     Value &W_id_list_size = symbolicInfo.row_offset_alloc;
     Value &semiringLoop_valueAccessIdx = symbolic_allValueAccessIdx[lhs_loc][0];
 
+    comet_vdump(W_id_list_size);
+
     /// Generate mark_array before symbolic outer-most for-loop
     genSymbolicMarkArray(builder,
                          loc,
                          outermost_forLoop,
                          symbolicInfo /*output*/);
     Value &mark_array = symbolicInfo.mark_array_alloc;
-
+//    {
+//      comet_pdump(W_id_list_size->getParentOfType<ModuleOp>());
+//    }
+    comet_vdump(mark_array);
     /// Generate mark before symbolic outer-most for-loop
     Value mark_alloc;
     Value mark_new_val;
@@ -4015,7 +4048,7 @@ namespace
      */
      /// %50 (tensors_lhs_Allocs[0]): the dense Workspace
      /// %51 (tensors_lhs_Allocs[1]): the mark_array (previously the is_visited_alloc)
-     /// %52 (tensors_lhs_Allocs[2]): ???
+     /// %52 (tensors_lhs_Allocs[2]): ??? (the W_id_list)
      /// %53 (tensors_lhs_Allocs[3]): W_id_list_size (DEPRECATED, replaced by symbolicInfo.row_offset_alloc and numericInfo.row_offset_alloc)
 
     /// ----------------- ///
@@ -4138,7 +4171,11 @@ namespace
                                                   main_tensors_all_Allocs,
                                                   false /* use_dynamic_init */,
                                                   symbolicInfo);
-              symbolicInfo.row_offset_alloc = main_tensors_all_Allocs[lhs_loc].back();   /// Store the row_offset_alloc
+              if (!symbolicInfo.row_offset_alloc)
+              {
+                symbolicInfo.row_offset_alloc = main_tensors_all_Allocs[lhs_loc].back();   /// Store the row_offset_alloc
+                comet_vdump(symbolicInfo.row_offset_alloc);
+              }
             }
 
             /// Prepare C, C.rowptr
@@ -4525,6 +4562,79 @@ namespace
     symbolicInfo.are_inputs_sparse = true;
   }
 
+  /// Check if the Index Tree represent the SpGEMM operation.
+  /// Check allPerms to find the index pattern of C[i,j] = A[i,k] * B[k,j]
+  bool checkIfSpGEMMWithoutMasking(std::vector<mlir::Value> &wp_ops)
+  {
+    bool is_SpGEMM = false;
+    bool correct_index_pattern = false;
+    bool correct_formats = false;
+    bool is_masking = false;
+    for (Value &op : wp_ops)
+    {
+      if (indexTree::IndexTreeComputeOp cur_op = dyn_cast<indexTree::IndexTreeComputeOp>(op.getDefiningOp()))
+      {
+        std::vector<std::vector<std::string>> allFormats;
+        std::vector<std::vector<int>> allPerms;
+        std::vector<std::vector<bool>> inputOutputMapping;
+        getFormatsPermsOfComputeOp(cur_op, allFormats, allPerms, inputOutputMapping);
+
+        if (3 == allPerms.size())
+        {
+          auto &rhs1 = allPerms[0];
+          auto &rhs2 = allPerms[1];
+          if (2 == rhs1.size() && 2 == rhs2.size() &&
+              rhs1[1] == rhs2[0] &&
+              rhs1[0] != rhs2[0] &&
+              rhs1[1] != rhs2[1])
+          {
+            /// C[i,j] = A[i,k] * B[k,j] is SpGEMM.
+            /// C[i,j] = A[i,j] *. B[i,j] is not SpGEMM.
+            correct_index_pattern = true;
+          }
+        }
+
+        if (3 == allFormats.size())
+        {
+          auto &rhs1 = allFormats[0];
+          auto &rhs2 = allFormats[1];
+          if (2 == rhs1.size() && 2 == rhs2.size() &&
+              "D" != rhs1[1] && "D" != rhs2[1])
+          {
+            /// For example: ["D"] = ["D", "CU"] * ["D", "CU"] is sparse times sparse
+            /// If the 2nd dimension is not dense, then the input should be sparse.
+            correct_formats = true;
+          }
+//          comet_debug() << "allFormats.size():" << allFormats.size() << "\n";
+//          for (size_t k = 0; k < allFormats.size(); ++k)
+//          {
+//            comet_debug() << "allFormats[" << k << "]:" << "\n";
+//            for (auto format : allFormats[k])
+//            {
+//              comet_debug() << format << "\n";
+//            }
+//          }
+        }
+
+        if (4 == allPerms.size())
+        {
+          auto &rhs1 = allPerms[0];
+          auto &rhs2 = allPerms[1];
+          auto &rhs3 = allPerms[2];
+
+          if (2 == rhs1.size() && 2 == rhs2.size() && 2 == rhs3.size() &&
+              rhs1[0] == rhs3[0] && rhs2[1] == rhs3[1])
+          {
+            is_masking = true;
+          }
+        }
+      }
+    }
+    is_SpGEMM = correct_index_pattern && correct_formats && !is_masking;
+
+    return is_SpGEMM;
+  }
+
   //===----------------------------------------------------------------------===//
   /// LowerIndexTreeIRToSCF PASS
   //===----------------------------------------------------------------------===//
@@ -4665,19 +4775,21 @@ void LowerIndexTreeToSCFPass::doLoweringIndexTreeToSCF(indexTree::IndexTreeOp &r
   NumericInfo numericInfo;
   checkIfAllSparse(wp_ops,
                    symbolicInfo /* output */);
+  bool is_SpGEMM_without_masking = checkIfSpGEMMWithoutMasking(wp_ops);
   if (symbolicInfo.are_inputs_sparse)
   {
     symbolicInfo.has_symbolic_phase = true;
   }
 
   /// Check if needs generate `omp.parallel`
-  if (symbolicInfo.has_symbolic_phase)
+  if (symbolicInfo.has_symbolic_phase && is_SpGEMM_without_masking)
   {
     symbolicInfo.has_omp_parallel = true;
     numericInfo.has_omp_parallel = true;
   }
   /// Generate `omp.parallel`
-  if (symbolicInfo.has_omp_parallel && numericInfo.has_omp_parallel) {
+  if (symbolicInfo.has_omp_parallel && numericInfo.has_omp_parallel)
+  {
     genOmpParallelSymbolicAndNumeric(builder,
                                      rootOp,
                                      symbolicInfo, /*output*/

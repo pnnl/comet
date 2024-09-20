@@ -1,7 +1,8 @@
 # RUN: export SPARSE_FILE_NAME0=%comet_integration_test_data_dir/test_rank2.mtx
 # RUN: export SORT_TYPE=SEQ_QSORT
-# RUN: comet-opt --opt-comp-workspace --convert-ta-to-it --convert-to-loops --convert-to-llvm %s &> CSR_mult_spTranspose_CSR.llvm
-# RUN: mlir-cpu-runner CSR_mult_spTranspose_CSR.llvm -O3 -e main -entry-point-result=void -shared-libs=%comet_utility_library_dir/libcomet_runner_utils%shlibext | FileCheck %s
+# RUN: comet-opt --opt-comp-workspace --convert-ta-to-it --convert-to-loops %s &> CSR_mult_spTranspose_CSR.SCF.mlir
+# RUN: mlir-opt --convert-linalg-to-loops --lower-affine --convert-scf-to-openmp --finalize-memref-to-llvm --convert-scf-to-cf --convert-cf-to-llvm --convert-func-to-llvm --convert-index-to-llvm --convert-openmp-to-llvm --convert-vector-to-llvm --canonicalize --convert-to-llvm CSR_mult_spTranspose_CSR.SCF.mlir &> CSR_mult_spTranspose_CSR.llvm
+# RUN: mlir-cpu-runner CSR_mult_spTranspose_CSR.llvm -O3 -e main -entry-point-result=void -shared-libs=%comet_utility_library_dir/libcomet_runner_utils%shlibext,%mlir_utility_library_dir/libomp%shlibext | FileCheck %s
 
 def main() {
 	#IndexLabel Declarations

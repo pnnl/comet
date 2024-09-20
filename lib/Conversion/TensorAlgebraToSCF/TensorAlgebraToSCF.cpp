@@ -700,7 +700,7 @@ namespace
       auto arith_op_attr = op.getOpAttr();
       std::string op_attr(arith_op_attr.getValue());
       comet_debug() << "aritmetic op: " << op_attr << "\n";
-      Value res_val;
+//      Value res_val;
       if (op_attr.compare("+") == 0)
       {
         rewriter.create<linalg::AddOp>(loc, ValueRange{lhs, rhs}, ValueRange(res));
