@@ -417,9 +417,11 @@ void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree, TargetDevice 
     }
     comet_debug() << "index " << index << "\n";
     /// Set the iterator type of the node
-    tree->setIteratorTypeByIndex(index, std::move(iteratorType));
-    node->setIteratorType(tree->getIteratorTypeByIndex(index));
-    comet_debug() << "tree: " << tree->getIteratorTypeByIndex(index)->dump() << " ptr: " << tree->getIteratorTypeByIndex(index) <<  "\n";
+//    tree->setIteratorTypeByIndex(index, std::move(iteratorType));
+//    node->setIteratorType(tree->getIteratorTypeByIndex(index));
+    size_t loc = tree->addIteratorType(index, std::move(iteratorType));
+    node->setIteratorType(tree->getIteratorTypeByLoc(loc));
+    comet_debug() << "tree: " << tree->getIteratorTypeByLoc(loc)->dump() << " ptr: " << tree->getIteratorTypeByLoc(loc) <<  "\n";
     comet_debug() << "node: " << node->getIteratorType()->dump() << " ptr: " << node->getIteratorType() << "\n";
 
     parent = node;
@@ -517,9 +519,11 @@ void doElementWiseOp(T op, unique_ptr<Index_Tree> &tree, TargetDevice device = C
     }
 
     /// Set iterator type.
-    tree->setIteratorTypeByIndex(index, std::move(iteratorType));
-    node->setIteratorType(tree->getIteratorTypeByIndex(index));
-    comet_debug() << "tree: " << tree->getIteratorTypeByIndex(index)->dump() << " ptr: " << tree->getIteratorTypeByIndex(index) <<  "\n";
+//    tree->setIteratorTypeByIndex(index, std::move(iteratorType));
+//    node->setIteratorType(tree->getIteratorTypeByIndex(index));
+    size_t loc = tree->addIteratorType(index, std::move(iteratorType));
+    node->setIteratorType(tree->getIteratorTypeByLoc(loc));
+    comet_debug() << "tree: " << tree->getIteratorTypeByLoc(loc)->dump() << " ptr: " << tree->getIteratorTypeByLoc(loc) <<  "\n";
     comet_debug() << "node: " << node->getIteratorType()->dump() << " ptr: " << node->getIteratorType() << "\n";
     parent = node;
   }
@@ -715,6 +719,9 @@ void LowerTensorAlgebraToIndexTreePass::runOnOperation()
   //   comet_debug() << "Before LowerTensorAlgebraToIndexTreePass\n";
   //   func.dump();
   // #endif
+
+//  ///test
+//  TargetDevice device = GPU;
 
   tree = Index_Tree::createTreeWithRoot();
   bool formIndexTreeDialect = false;

@@ -210,7 +210,8 @@ class Index_Tree
   std::map<void *, unique_ptr<Tensor>> valueToTensor;
   std::map<void *, int> indexLabelToId;
 //  std::vector<unique_ptr<IteratorType>> iteratorTypes; /// Iterator types of all iterators, referred by the indices
-  std::unordered_map<size_t, unique_ptr<IteratorType>> iteratorTypes; /// Iterator types of all iterators, referred by the indices
+//  std::unordered_map<size_t, unique_ptr<IteratorType>> iteratorTypes; /// Iterator types of all iterators, referred by the indices
+  std::vector< std::pair<size_t, unique_ptr<IteratorType>> > iteratorTypes; /// Iterator types of all iterators. The pair is <index, iteratorType>. The `index` is the iterator index (e.g., value 0 for `indices = [0]` ) in the IndexTreeIndicesNode. The `iteratorType` is the iterator type (e.g., `default`, `parallel`) for that iterator.
   unsigned int indexID = 0;
 
 public:
@@ -311,21 +312,32 @@ public:
 
 //  void setSizeOfIteratorTypesByIndices(IndicesType allIndices);
 
-  void setIteratorTypeByIndex(size_t index, unique_ptr<IteratorType> type)
+//  void setIteratorTypeByIndex(size_t index, unique_ptr<IteratorType> type)
+//  {
+//    if (iteratorTypes.find(index) == iteratorTypes.end())
+//    {
+//      iteratorTypes[index] = std::move(type);
+//    }
+//    else
+//    {
+//      comet_debug() << "WARNING: Trying to set iterator type of index that has already been set. Ignoring\n";
+//    }
+//  }
+
+  size_t addIteratorType(size_t index, unique_ptr<IteratorType> type)
   {
-    if (iteratorTypes.find(index) == iteratorTypes.end())
-    {
-      iteratorTypes[index] = std::move(type);
-    }
-    else
-    {
-      comet_debug() << "WARNING: Trying to set iterator type of index that has already been set. Ignoring\n";
-    }
+    iteratorTypes.push_back(std::make_pair(index, std::move(type)));
+    return iteratorTypes.size() - 1;
   }
 
-  IteratorType *getIteratorTypeByIndex(size_t index)
+//  IteratorType *getIteratorTypeByIndex(size_t index)
+//  {
+//    return iteratorTypes[index].get();
+//  }
+
+  IteratorType *getIteratorTypeByLoc(size_t loc)
   {
-    return iteratorTypes[index].get();
+    return iteratorTypes[loc].second.get();
   }
 };
 
