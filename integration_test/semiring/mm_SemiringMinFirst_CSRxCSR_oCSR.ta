@@ -1,6 +1,6 @@
 # Sparse matrix sparse matrix min-first semiring operation.
 # Sparse matrix is in CSR format. Currently workspace transformation on the IndexTree dialect works for only CSR format
-# RUN: comet-opt --opt-comp-workspace --convert-ta-to-it --convert-to-loops --convert-to-llvm %s &> mm_SemiringMinFirst_CSRxCSR_oCSR.SCF.mlir
+# RUN: comet-opt --opt-comp-workspace --convert-ta-to-it --convert-to-loops --convert-to-llvm %s &> mm_SemiringMinFirst_CSRxCSR_oCSR.llvm
 # RUN: export SPARSE_FILE_NAME0=%comet_integration_test_data_dir/test_rank2.mtx
 # RUN: export SPARSE_FILE_NAME1=%comet_integration_test_data_dir/test_rank2.mtx
 # RUN: mlir-cpu-runner mm_SemiringMinFirst_CSRxCSR_oCSR.llvm -O3 -e main -entry-point-result=void -shared-libs=%comet_utility_library_dir/libcomet_runner_utils%shlibext,%mlir_utility_library_dir/libomp%shlibext | FileCheck %s

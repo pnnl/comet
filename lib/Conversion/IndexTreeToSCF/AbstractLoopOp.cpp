@@ -182,6 +182,11 @@ void AbstractLoopOp::buildLoopOp(const std::string &type,
   }
   else if ("omp.parallel" == type)
   {
+    /// Reference: llvm/mlir/lib/Conversion/SCFToOpenMP/SCFToOpenMP.cpp:414 . `rewriter.create<omp::ParallelOp>` shows
+    /// how to create a `omp::ParallelOp` and following a `omp::WsLoopOp`. It used `inlineRegionBefore()` to create
+    /// a block for the `omp::WsLoopOp`.
+    /// Reference: llvm/mlir/lib/IR/Builders.cpp:419 . `OpBuilder::createBlock()` shows what is required to creat a
+    /// block. Creating a block is required after creating a `omp::WsLoopOp`.
     auto tmp = builder.create<omp::WsLoopOp>(loc,
                                              ValueRange{lowerBound},
                                              ValueRange{upperBound},
