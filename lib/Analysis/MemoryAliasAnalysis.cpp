@@ -18,6 +18,13 @@
 
 using namespace mlir;
 
+// *********** For debug purpose *********//
+//#define COMET_DEBUG_MODE
+//#define COMET_DEBUG_COMET_ANALYSIS_MEMORYALIASANALYSIS_DUMP_ON
+#include "comet/Utils/debug.h"
+#undef COMET_DEBUG_MODE
+// *********** For debug purpose *********//
+
 /// Print a value that is used as an operand of an alias query.
 static void printAliasOperand(Operation *op)
 {
@@ -68,23 +75,46 @@ namespace mlir
     void AliasAnalysisBase::runAliasAnalysisOnOperation(
         Operation *op, AliasAnalysis &aliasAnalysis)
     {
+      comet_debug() << "Before analysis:\n";
+      comet_pdump(op);
+
       llvm::errs() << "Testing : " << *op->getInherentAttr("sym_name") << "\n";
 
       // Collect all of the values to check for aliasing behavior.
       SmallVector<Value, 32> valsToCheck;
       op->walk([&](Operation *op)
-               {
-    if (!op->getDiscardableAttr("test.ptr"))
-      return;
-    valsToCheck.append(op->result_begin(), op->result_end());
-    for (Region &region : op->getRegions())
-      for (Block &block : region)
-        valsToCheck.append(block.args_begin(), block.args_end()); });
+      {
+        if (!op->getDiscardableAttr("test.ptr"))
+          return;
+        valsToCheck.append(op->result_begin(), op->result_end());
+        for (Region &region : op->getRegions())
+          for (Block &block : region)
+            valsToCheck.append(block.args_begin(), block.args_end());
+      });
 
       // Check for aliasing behavior between each of the values.
       for (auto it = valsToCheck.begin(), e = valsToCheck.end(); it != e; ++it)
+      {
         for (auto *innerIt = valsToCheck.begin(); innerIt != it; ++innerIt)
+        {
+#ifdef COMET_DEBUG_COMET_ANALYSIS_MEMORYALIASANALYSIS_DUMP_ON
+          llvm::errs() << "\n";
+          llvm::errs() << "lhs: ";
+          comet_pdump(innerIt);
+          printAliasOperand(*innerIt);
+          llvm::errs() << "\n";
+
+          llvm::errs() << "rhs: ";
+          comet_pdump(it);
+          printAliasOperand(*it);
+          llvm::errs() << "\n";
+#endif
           printAliasResult(aliasAnalysis.alias(*innerIt, *it), *innerIt, *it);
+        }
+      }
+
+      comet_debug() << "After analysis:\n";
+      comet_pdump(op);
     }
 
     void AliasAnalysisModRefBase::runAliasAnalysisOnOperation(
@@ -95,22 +125,24 @@ namespace mlir
       // Collect all of the values to check for aliasing behavior.
       SmallVector<Value, 32> valsToCheck;
       op->walk([&](Operation *op)
-               {
-    if (!op->getDiscardableAttr("test.ptr"))
-      return;
-    valsToCheck.append(op->result_begin(), op->result_end());
-    for (Region &region : op->getRegions())
-      for (Block &block : region)
-        valsToCheck.append(block.args_begin(), block.args_end()); });
+      {
+        if (!op->getDiscardableAttr("test.ptr"))
+          return;
+        valsToCheck.append(op->result_begin(), op->result_end());
+        for (Region &region : op->getRegions())
+          for (Block &block : region)
+            valsToCheck.append(block.args_begin(), block.args_end());
+      });
 
       // Check for aliasing behavior between each of the values.
       for (auto &it : valsToCheck)
       {
         op->walk([&](Operation *op)
-                 {
-      if (!op->getDiscardableAttr("test.ptr"))
-        return;
-      printModRefResult(aliasAnalysis.getModRef(op, it), op, it); });
+        {
+          if (!op->getDiscardableAttr("test.ptr"))
+            return;
+          printModRefResult(aliasAnalysis.getModRef(op, it), op, it);
+        });
       }
     }
 
@@ -134,10 +166,10 @@ namespace
       return "memory-alias-gokcen";
     }
 
-    // StringRef getDescription() const final
-    // {
-    //   return "Memory alias analysis results.";
-    // }
+    StringRef getDescription() const final
+    {
+      return "Memory alias analysis results.";
+    }
 
     void runOnOperation() override
     {
@@ -158,7 +190,11 @@ namespace
         PassWrapper<AliasAnalysisModRefPass, OperationPass<>>
   {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AliasAnalysisModRefPass)
-
+    StringRef getArgument() const final { return "mem-alias-analysis-modref"; }
+    StringRef getDescription() const final
+    {
+      return "Memory alias analysis ModRef results.";
+    }
     void runOnOperation() override
     {
       AliasAnalysis &aliasAnalysis = getAnalysis<AliasAnalysis>();
@@ -219,7 +255,14 @@ namespace
         PassWrapper<AliasAnalysisExtendingPass, OperationPass<>>
   {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AliasAnalysisExtendingPass)
-
+    StringRef getArgument() const final
+    {
+      return "mem-alias-analysis-extending";
+    }
+    StringRef getDescription() const final
+    {
+      return "Memory alias analysis extending.";
+    }
     void runOnOperation() override
     {
       AliasAnalysis aliasAnalysis(getOperation());

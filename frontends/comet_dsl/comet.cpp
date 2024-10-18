@@ -166,6 +166,12 @@ static cl::opt<bool> AnalysisMemAccessFrequency("mem-access-frequency-analysis",
 static cl::opt<bool> AnalysisMemAccessPattern("mem-access-pattern-analysis", cl::init(false),
                                               cl::desc("memory access pattern analysis"));
 
+///  =============================================================================
+///  Alias analysis
+///  =============================================================================
+static cl::opt<bool> AnalysisMemAlias("mem-alias-analysis", cl::init(false),
+                                      cl::desc("memory alias analysis"));
+
 /// =============================================================================
 /// TTGT reformulation for tensor contraction operations
 /// =============================================================================
@@ -255,7 +261,8 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
 
   mlir::PassManager pm(module.get()->getName());
   /// Apply any generic pass manager command line options and run the pipeline.
-  applyPassManagerCLOptions(pm);
+  if (mlir::failed(applyPassManagerCLOptions(pm)))
+    return 4;
 
   /// Lower tensorAlgebra:FuncOp to func::FuncOp
   pm.addPass(mlir::comet::createFuncOpLoweringPass());
@@ -415,6 +422,11 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
   if (AnalysisMemAccessPattern)
   {
     optPM.addPass(mlir::comet::createMemoryAccessPatternAnalysisPass());
+  }
+
+  if (AnalysisMemAlias)
+  {
+    optPM.addPass(mlir::comet::createAliasAnalysisPass());
   }
 
   /// =============================================================================

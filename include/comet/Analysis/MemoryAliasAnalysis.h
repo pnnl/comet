@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef COMET_ANALYSIS_ALIASANALYSIS_H
-#define COMET_ANALYSIS_ALIASANALYSIS_H
+#ifndef COMET_ANALYSIS_MEMORYALIASANALYSIS_H_
+#define COMET_ANALYSIS_MEMORYALIASANALYSIS_H_
 
 #include "mlir/Analysis/AliasAnalysis.h"
 
@@ -53,4 +53,4 @@ namespace mlir
   } // namespace comet
 } // namespace mlir
 
-#endif // COMET_ANALYSIS_ALIASANALYSIS_H
+#endif // COMET_ANALYSIS_MEMORYALIASANALYSIS_H_

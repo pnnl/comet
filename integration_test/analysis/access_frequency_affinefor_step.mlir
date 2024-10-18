@@ -15,6 +15,6 @@ func.func @affine_for_step() {
   }
 }
 
-// CHECK: Memory location %alloc = memref.alloc() : memref<10xi32> was accessed 6 times.
-// CHECK: Memory location %alloc_0 = memref.alloc() : memref<10xi32> was accessed 3 times.
+// CHECK-DAG: Memory location %alloc = memref.alloc() : memref<10xi32> was accessed 6 times.
+// CHECK-DAG: Memory location %alloc_0 = memref.alloc() : memref<10xi32> was accessed 3 times.
 

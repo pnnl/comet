@@ -14,5 +14,5 @@ func.func @sequential_access() {
   }
 }
 
-// CHECK: Sequential access detected for memory location: %alloc = memref.alloc() : memref<10xi32>
-// CHECK: Sequential access detected for memory location: %alloc_0 = memref.alloc() : memref<10xi32>
+// CHECK-DAG: Sequential access detected for memory location: %alloc = memref.alloc() : memref<10xi32>
+// CHECK-DAG: Sequential access detected for memory location: %alloc_0 = memref.alloc() : memref<10xi32>

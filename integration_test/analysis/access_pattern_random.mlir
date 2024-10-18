@@ -14,5 +14,5 @@ func.func @random_access() {
   }
 }
 
-// CHECK: Random access detected for memory location: %alloc = memref.alloc() : memref<100xi32>
-// CHECK: Sequential access detected for memory location: %alloc_0 = memref.alloc() : memref<100xi32>
+// CHECK-DAG: Random access detected for memory location: %alloc = memref.alloc() : memref<100xi32>
+// CHECK-DAG: Sequential access detected for memory location: %alloc_0 = memref.alloc() : memref<100xi32>

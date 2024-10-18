@@ -203,19 +203,19 @@ void MemoryAccessFreqeuncyAnalysisPass::runOnOperation()
 bool MemoryAccessPatternAnalysisPass::isSimpleAffineExpr(AffineExpr expr)
 {
   comet_vdump(expr);
-  if (auto dimExpr = expr.dyn_cast<AffineDimExpr>())
+  if (auto dimExpr = dyn_cast<AffineDimExpr>(expr))
   {
     comet_debug() << "Direct access to a loop index can be sequential";
     return true; // Direct loop index access is simple.
   }
 
-  if (auto constExpr = expr.dyn_cast<AffineConstantExpr>())
+  if (auto constExpr = dyn_cast<AffineConstantExpr>(expr))
   {
     return true; // Constant expressions are simple.
   }
 
   // Handle simple addition or multiplication.
-  if (auto binExpr = expr.dyn_cast<AffineBinaryOpExpr>())
+  if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(expr))
   {
     switch (binExpr.getKind())
     {
@@ -224,7 +224,7 @@ bool MemoryAccessPatternAnalysisPass::isSimpleAffineExpr(AffineExpr expr)
       return isSimpleAffineExpr(binExpr.getLHS()) && isSimpleAffineExpr(binExpr.getRHS());
     case AffineExprKind::Mul:
       // Allow multiplication only if one side is a constant.
-      if (binExpr.getLHS().isa<AffineConstantExpr>() || binExpr.getRHS().isa<AffineConstantExpr>())
+      if (isa<AffineConstantExpr>(binExpr.getLHS()) || isa<AffineConstantExpr>(binExpr.getRHS()))
       {
         return isSimpleAffineExpr(binExpr.getLHS()) || isSimpleAffineExpr(binExpr.getRHS());
       }
