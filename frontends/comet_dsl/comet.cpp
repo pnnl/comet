@@ -202,6 +202,12 @@ static cl::opt<bool> isLoweringToLLVM("convert-to-llvm",
 static cl::opt<bool> IsPrintFlops("print-flops", cl::init(false),
                                   cl::desc("Print the flops per tensor contraction"));
 
+/// =============================================================================
+/// MLIR options
+/// =============================================================================
+static cl::opt<bool> allowUnregisteredDialects("allow-unregistered-dialects", cl::init(false),
+                                               cl::desc("Allow unregistered dialects, e.g., non-standard dialects."));
+
 /// Returns a Tensor Algebra AST resulting from parsing the file or a nullptr on error.
 std::unique_ptr<tensorAlgebra::ModuleAST> parseInputFile(llvm::StringRef filename)
 {
@@ -256,6 +262,12 @@ int loadMLIR(mlir::MLIRContext &context,
 int loadAndProcessMLIR(mlir::MLIRContext &context,
                        mlir::OwningOpRef<mlir::ModuleOp> &module)
 {
+  /// Allow unregistered dialects, such as some non-standard dialects not included in MLIR code base.
+  if (allowUnregisteredDialects)
+  {
+    context.allowUnregisteredDialects(true);
+  }
+
   if (int error = loadMLIR(context, module))
     return error;
 
