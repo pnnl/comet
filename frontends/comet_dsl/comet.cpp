@@ -205,8 +205,8 @@ static cl::opt<bool> IsPrintFlops("print-flops", cl::init(false),
 /// =============================================================================
 /// MLIR options
 /// =============================================================================
-static cl::opt<bool> allowUnregisteredDialects("allow-unregistered-dialects", cl::init(false),
-                                               cl::desc("Allow unregistered dialects, e.g., non-standard dialects."));
+static cl::opt<bool> allowUnregisteredDialect("allow-unregistered-dialect", cl::init(false),
+                                              cl::desc("Allow unregistered dialects, e.g., non-standard dialects."));
 
 /// Returns a Tensor Algebra AST resulting from parsing the file or a nullptr on error.
 std::unique_ptr<tensorAlgebra::ModuleAST> parseInputFile(llvm::StringRef filename)
@@ -263,7 +263,7 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
                        mlir::OwningOpRef<mlir::ModuleOp> &module)
 {
   /// Allow unregistered dialects, such as some non-standard dialects not included in MLIR code base.
-  if (allowUnregisteredDialects)
+  if (allowUnregisteredDialect)
   {
     context.allowUnregisteredDialects(true);
   }

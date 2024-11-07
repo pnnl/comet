@@ -25,52 +25,6 @@ using namespace mlir::affine;
 
 namespace
 {
-  /// For example, time complexity O(L*N*M + I*J), `L*N*M` is a term, so is `I*J`. And `L`, `N`, etc. are factors.
-  /// A factor could be
-  /// 1. const, e.g., O(1)
-  /// 2. var, e.g., O(%alloc[%c4])
-  /// 3. var - var, e.g., O(%alloc_9[%14]-%alloc_9[%arg0])
-  /// 4. var - const, e.g., O(%alloc[%c4] - 4) (this is very rare)
-  class TimeTerm
-  {
-    std::vector<std::string> factors_;
-  };
-  class TimeComplexity
-  {
-    std::vector<std::string> list_;
-
-  public:
-    void addTerm(const std::string &term)
-    {
-      list_.push_back(term);
-    }
-
-    std::string toString()
-    {
-      std::string text = "O(";
-      for (auto iter = list_.begin(); iter != list_.end(); ++iter)
-      {
-        if (iter == list_.begin())
-        {
-          text += *iter;
-        }
-        else
-        {
-          text += " + " + *iter;
-        }
-      }
-      text += ")";
-
-      return text;
-    }
-
-    void dump()
-    {
-      llvm::errs() << toString() << "\n";
-    }
-  };
-
-
   struct MemoryAccessFreqeuncyAnalysisPass
       : PassWrapper<MemoryAccessFreqeuncyAnalysisPass, OperationPass<func::FuncOp>>
   {
@@ -79,8 +33,8 @@ namespace
     llvm::DenseMap<Value, int> accessFrequencyMap;
 
     llvm::DenseMap<Value, std::string> object_name_map_;
-    llvm::DenseMap<Value, TimeComplexity> read_count_map_;
-    llvm::DenseMap<Value, TimeComplexity> write_count_map_;
+    llvm::DenseMap<Value, comet::TimeComplexity> read_count_map_;
+    llvm::DenseMap<Value, comet::TimeComplexity> write_count_map_;
 
     // StringRef getArgument() const final
     // {
@@ -122,6 +76,256 @@ namespace
 ///===----------------------------------------------------------------------===//
 /// Memory Access Frequency Analysis
 ///===----------------------------------------------------------------------===//
+namespace mlir
+{
+  namespace comet
+  {
+    /// -------------------- ///
+    /// class TimeFactor
+    /// -------------------- ///
+    bool TimeFactor::operator<(const TimeFactor &rhs) const
+    {
+      /// Compare priority at first
+      if (priority_ != rhs.priority_)
+      {
+        return priority_ < rhs.priority_;
+      }
+      if (kind_ == Constant && rhs.kind_ == Constant)
+      {
+        /// If both constant, compare their values
+        return std::stoull(name_) < std::stoull(rhs.name_);
+      }
+      /// Assume Constant should be less than Variable, so that O(1) < O(n).
+      if (kind_ == Constant && rhs.kind_ == Variable)
+      {
+        return true;
+      }
+      else if (kind_ == Variable && rhs.kind_ == Constant)
+      {
+        return false;
+      }
+      /// If both Variable, and equal priority, then don't know
+      return false;
+    }
+
+    void TimeFactor::dump() const
+    {
+      llvm::errs() << toString() << "\n";
+    }
+    /// End class TimeFactor
+
+    /// -------------------- ///
+    /// class TimeTerm
+    /// -------------------- ///
+
+    const TimeFactor TimeTerm::getFactor(uint64_t index) const
+    {
+      assert(index < factors_.size() && "Error: index >= factors_.size()");
+      return factors_[index];
+    }
+
+    void TimeTerm::setFactor(uint64_t index, const TimeFactor &factor)
+    {
+      assert(index < factors_.size() && "Error: index >= factors_.size()");
+      factors_[index] = factor;
+
+      /// Update hasConstant_
+      if (hasConstant_)
+      {
+        if (0 == index && !factor.isConstant())
+        {
+          hasConstant_ = false;
+        }
+      }
+      else if (factor.isConstant())
+      {
+        hasConstant_ = true;
+        if (index != 0)
+        {
+          std::swap(factors_.front(), factors_[index]);
+        }
+      }
+    }
+
+    /// Add factor to the term. The Constant factor, if existed, should always be the first factor in the term.
+    void TimeTerm::addFactor(const TimeFactor &factor)
+    {
+      auto isFloat =
+        [&](std::string text) -> bool
+        {
+          if (text.find('.') != std::string::npos)
+          {
+            return true;
+          }
+          else
+          {
+            return false;
+          }
+        };
+      if (factor.isConstant())
+      {
+        /// If factor is a Constant, then try to update the existing constant factor
+        if (hasConstant_)
+        {
+          /// Update the existing constant factor
+          TimeFactor &c = factors_.front();
+          if (isFloat(c.getName()) || isFloat(factor.getName()))
+          {
+            float old_value = std::stof(c.getName());
+            float new_value = old_value * std::stof(factor.getName());
+            c.setName(std::to_string(new_value));
+          }
+          else
+          {
+            auto old_value = std::stoull(c.getName());
+            auto new_value = old_value * std::stoull(factor.getName());
+            c.setName(std::to_string(new_value));
+          }
+        }
+        else
+        {
+          /// This factor is the first constant factor, and put it on the front;
+          factors_.insert(factors_.begin(), factor);
+          hasConstant_ = true;
+        }
+      }
+      else
+      {
+        /// The factor is not constant.
+        factors_.push_back(factor);
+      }
+    }
+
+    bool TimeTerm::operator<(const TimeTerm &rhs) const
+    {
+      if (factors_.size() != rhs.factors_.size())
+      {
+        return factors_.size() < rhs.factors_.size();
+      }
+
+      if (factors_.size() == 1 && rhs.factors_.size() == 1)
+      {
+        return factors_.front() < rhs.factors_.front();
+      }
+
+      return factors_ < rhs.factors_;
+    }
+
+    /// If has only one single constant factor, return true, otherwise false
+    bool TimeTerm::isSingleConstant() const
+    {
+      if (factors_.size() == 1)
+      {
+        if (factors_.front().isConstant())
+        {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    std::string TimeTerm::toString() const
+    {
+      std::string text;
+      for (auto iter = factors_.begin(); iter != factors_.end(); ++iter)
+      {
+        if (factors_.begin() == iter)
+        {
+          text += iter->toString();
+        }
+        else
+        {
+          text += "*" + iter->toString();
+        }
+      }
+
+      return text;
+    }
+
+    void TimeTerm::dump() const
+    {
+      llvm::errs() << toString() << "\n";
+    }
+    /// End class TimeTerm
+
+    /// -------------------- ///
+    /// class TimeComplexity
+    /// -------------------- ///
+    bool TimeComplexity::operator<(const TimeComplexity &rhs) const
+    {
+      if ((uint64_t) -1 != locMaxTerm_ && (uint64_t) -1 != rhs.locMaxTerm_)
+      /// If lhs and rhs are not empty
+      {
+        return terms_[locMaxTerm_] < rhs.terms_[rhs.locMaxTerm_];
+      }
+      else if ((uint64_t) -1 == rhs.locMaxTerm_)
+      /// If rhs is empty, then no matter lhs is empty or not, return false.
+      {
+        return false;
+      }
+      else
+      /// If rhs is not empty and lhs is empty, return true.
+      {
+        return true;
+      }
+    }
+
+    void TimeComplexity::addTerm(const TimeTerm &term)
+    {
+      /// If current time complexity only contains a single constant and the new term is also a single constant,
+      /// then update the constant factor.
+      if (terms_.size() == 1 && terms_.front().isSingleConstant() && term.isSingleConstant())
+      {
+        TimeFactor new_factor = terms_.front().getFactor(0);
+        auto old_value = std::stoull(new_factor.getName());
+        auto new_value = old_value + std::stoull(term.getFactors().front().getName());
+        new_factor.setName(std::to_string(new_value));
+        terms_.front().setFactor(0, new_factor);
+        return;
+      }
+      terms_.push_back(term);
+      /// locMaxTerm_ pointer to the largest term.
+      if (terms_.size() == 1)
+      {
+        locMaxTerm_ = 0;
+      }
+      else
+      {
+        if (term > terms_[locMaxTerm_])
+        {
+          locMaxTerm_ = terms_.size() - 1;
+        }
+      }
+    }
+
+    std::string TimeComplexity::toString() const
+    {
+      std::string text = "O(";
+      for (auto iter = terms_.begin(); iter != terms_.end(); ++iter)
+      {
+        if (iter == terms_.begin())
+        {
+          text += iter->toString();
+        }
+        else
+        {
+          text += " + " + iter->toString();
+        }
+      }
+      text += ")";
+
+      return text;
+    }
+
+    void TimeComplexity::dump() const
+    {
+      llvm::errs() << toString() << "\n";
+    }
+
+    /// End class TimeComplexity
+  }
+}
+
 namespace
 {
   /// Check if an op is within any for-loops
@@ -308,7 +512,7 @@ namespace
   }
 
   /// Get a for-loop's range as (upperBound - lowerBound)
-  std::string getForLoopRange(mlir::Operation *forLoop)
+  comet::TimeFactor getForLoopRangeAsFactor(mlir::Operation *forLoop)
   {
     auto getLowerBoundHelper =
       [&](mlir::Operation *op) -> mlir::Value
@@ -359,39 +563,73 @@ namespace
     Value upperBound = getUpperBoundHelper(forLoop);
     bool upper_is_number = false;
     std::string upperBoundStr = getBoundaryStr(upperBound, upper_is_number/*output*/);
-    std::string term;
+//    std::string term;
+    comet::TimeFactor factor;
     if (lower_is_number && upper_is_number)
     {
       auto lower_int = std::strtoll(lowerBoundStr.c_str(), nullptr, 0);
       auto upper_int = std::strtoll(upperBoundStr.c_str(), nullptr, 0);
       auto range = upper_int - lower_int;
       /// TODO: what if
-      /// 1. the step is negative then the upper_int < lower_int
-      /// 2. range is 0
+      /// 1. the step is negative then the upper_int < lower_int.
+      /// 2. range is 0.
       /// 3. upper bound or lower bound are not integer.
-      term = std::to_string(range);
+      /// 4. step is not 1.
+      factor.setName(std::to_string(range));
     }
     else if (lower_is_number && lowerBoundStr == "0")
     {
-      term = upperBoundStr;
+      factor.setName(upperBoundStr);
+      factor.setKind(comet::TimeFactor::Variable);
     }
     else
     {
-      term = "(" + upperBoundStr + "-" + lowerBoundStr + ")";
+      factor.setName("(" + upperBoundStr + "-" + lowerBoundStr + ")");
+      factor.setKind(comet::TimeFactor::Variable);
     }
 
-    return term;
+    return factor;
   }
 
-  /// If op is within for-loops, get its time complexity
-  std::string getForLoopFactors(mlir::Operation *op)
+  /// Find the inner most for-loop operation
+  void findInnerMostForLoop(mlir::Operation *op,
+                           scf::ForOp &forOp /*output*/,
+                           scf::ParallelOp &parallelOp /*output*/,
+                           omp::WsLoopOp &wsLoopOp /*output*/)
   {
-    std::vector<std::string> factors;  /// Each level has one factor
-    scf::ForOp forOp = op->getParentOfType<scf::ForOp>();
-    scf::ParallelOp parallelOp = op->getParentOfType<scf::ParallelOp>();
-    omp::WsLoopOp wsLoopOp = op->getParentOfType<omp::WsLoopOp>();
-//    scf::ForOp forOp = mlir::dyn_cast<scf::ForOp>(op->getParentOp());
-//    scf::ParallelOp parallelOp = mlir::dyn_cast<scf::ParallelOp>(op->getParentOp());
+    mlir::DominanceInfo domInfo(op);
+    mlir::Operation *curr = op;
+    forOp = mlir::dyn_cast<scf::ForOp>(curr->getParentOp());
+    parallelOp = mlir::dyn_cast<scf::ParallelOp>(curr->getParentOp());
+    wsLoopOp = mlir::dyn_cast<omp::WsLoopOp>(curr->getParentOp());
+    curr = curr->getParentOp();
+
+    while (curr && (!forOp && !parallelOp && !wsLoopOp))
+    {
+      forOp = mlir::dyn_cast<scf::ForOp>(curr->getParentOp());
+      parallelOp = mlir::dyn_cast<scf::ParallelOp>(curr->getParentOp());
+      wsLoopOp = mlir::dyn_cast<omp::WsLoopOp>(curr->getParentOp());
+      curr = curr->getParentOp();
+    }
+
+    comet_debug() << "forOp: " << (void *) forOp << "\n";
+    comet_debug() << "parallelOp: " << (void *) parallelOp << "\n";
+    comet_debug() << "wsLoopOp: " << (void *) wsLoopOp << "\n";
+  }
+
+
+  /// If op is within for-loops, get its time complexity
+  comet::TimeTerm getForLoopRangesAsTerm(mlir::Operation *op)
+  {
+//    std::vector<std::string> factors;  /// Each level has one factor
+    comet::TimeTerm term;
+    scf::ForOp forOp;
+    scf::ParallelOp parallelOp;
+    omp::WsLoopOp wsLoopOp;
+    findInnerMostForLoop(op, forOp /*output*/, parallelOp /*output*/, wsLoopOp /*output*/);
+//    scf::ForOp forOp = op->getParentOfType<scf::ForOp>();
+//    scf::ParallelOp parallelOp = op->getParentOfType<scf::ParallelOp>();
+//    omp::WsLoopOp wsLoopOp = op->getParentOfType<omp::WsLoopOp>();
     auto getUpperLevelForLoop =
       [&](mlir::Operation *currOp) -> bool
       {
@@ -422,8 +660,8 @@ namespace
       if (forOp)
       {
         comet_vdump(forOp);
-        std::string term = getForLoopRange(forOp);
-        factors.push_back(term);
+        comet::TimeFactor factor = getForLoopRangeAsFactor(forOp);
+        term.addFactor(factor);
         if (!getUpperLevelForLoop(forOp))
         {
           break;
@@ -432,8 +670,8 @@ namespace
       else if (parallelOp)
       {  /// parallel Op
         comet_vdump(parallelOp);
-        std::string term = getForLoopRange(parallelOp);
-        factors.push_back(term);
+        comet::TimeFactor factor = getForLoopRangeAsFactor(parallelOp);
+        term.addFactor(factor);
         if (!getUpperLevelForLoop(parallelOp))
         {
           break;
@@ -442,8 +680,8 @@ namespace
       else if (wsLoopOp)
       {
         comet_vdump(wsLoopOp);
-        std::string term = getForLoopRange(wsLoopOp);
-        factors.push_back(term);
+        comet::TimeFactor factor = getForLoopRangeAsFactor(wsLoopOp);
+        term.addFactor(factor);
         if (!getUpperLevelForLoop(wsLoopOp))
         {
           break;
@@ -451,22 +689,7 @@ namespace
       }
     }
 
-    /// Combine strings to a final string
-    std::string factors_str = "";
-    for (auto iter = factors.rbegin(); iter != factors.rend(); ++iter)
-    {
-      if (iter == factors.rbegin())
-      {
-        factors_str += *iter;
-      }
-      else
-      {
-        factors_str += "*" + *iter;
-      }
-    }
-
-//    comet_debug() << "factors_str: " << factors_str << "\n";
-    return factors_str;
+    return term;
   }
 
 
@@ -506,20 +729,26 @@ namespace
 
 
   /// Analyze a memory object in terms of read and write frequency that is represented as time complexity
-  void analyzeOneMemoryObject(memref::AllocOp &memAllocOp,
-                              TimeComplexity &read_TC /*output*/,
-                              TimeComplexity &write_TC /*output*/)
+  void analyzeMemrefAllocOp(memref::AllocOp &memAllocOp,
+                              comet::TimeComplexity &read_TC /*output*/,
+                              comet::TimeComplexity &write_TC /*output*/)
   {
     comet_vdump(memAllocOp);
+    comet_debug() << "\n";
     for (mlir::Operation *user : memAllocOp->getUsers())
     {
       comet_pdump(user);
-      std::string term = "1";
+//      std::string term = "1";
+      comet::TimeTerm term;
       if (isOpInForLoop(user))
       {
         comet_debug() << "in a loop\n";
-        term = getForLoopFactors(user);
-        comet_debug() << "term: " << term << "\n";
+        term = getForLoopRangesAsTerm(user);
+        comet_vdump(term);
+      }
+      else
+      {
+        term.addFactor(comet::TimeFactor("1"));
       }
 
       if (isReadOp(user))
@@ -609,7 +838,7 @@ void MemoryAccessFreqeuncyAnalysisPass::runOnOperation()
 
   // Get the current function.
   func::FuncOp function = getOperation();
-//  comet_vdump(function);
+  comet_vdump(function);
   function.walk(
     [&](mlir::Operation *op)
     {
@@ -618,10 +847,10 @@ void MemoryAccessFreqeuncyAnalysisPass::runOnOperation()
       if (auto memAllocOp = mlir::dyn_cast<memref::AllocOp>(op))
       {
         comet_vdump(memAllocOp);
-        TimeComplexity read_TC;
-        TimeComplexity write_TC;
+        comet::TimeComplexity read_TC;
+        comet::TimeComplexity write_TC;
         /// Analyze the memory object
-        analyzeOneMemoryObject(memAllocOp, read_TC /*output*/, write_TC /*output*/);
+        analyzeMemrefAllocOp(memAllocOp, read_TC /*output*/, write_TC /*output*/);
         read_count_map_[memAllocOp] = read_TC;
         write_count_map_[memAllocOp] = write_TC;
         /// Get its name
@@ -634,6 +863,8 @@ void MemoryAccessFreqeuncyAnalysisPass::runOnOperation()
 
   /// dump maps
   llvm::errs() << "####====---------------------------------====####\n";
+  std::vector<std::pair<comet::TimeComplexity, std::string>> read_tc;
+  std::vector<std::pair<comet::TimeComplexity, std::string>> write_tc;
   for (auto &entry : read_count_map_)
   {
     llvm::errs() << "\n";
@@ -644,6 +875,20 @@ void MemoryAccessFreqeuncyAnalysisPass::runOnOperation()
     llvm::errs() << object_name_map_[entry.first] << "\n";
     llvm::errs() << "read time-complexity: " << entry.second.toString() << "\n";
     llvm::errs() << "write time-complexity: " << write_count_map_[entry.first].toString() << "\n";
+    read_tc.push_back(std::make_pair(entry.second, object_name_map_[entry.first]));
+    write_tc.push_back(std::make_pair(write_count_map_[entry.first], object_name_map_[entry.first]));
+  }
+  std::sort(read_tc.rbegin(), read_tc.rend());
+  std::sort(write_tc.rbegin(), write_tc.rend());
+  llvm::errs() << "\nRead Time Complexity:\n";
+  for (auto &tc : read_tc)
+  {
+    llvm::errs() << tc.first.toString() << "\t|\t" << tc.second << "\n";
+  }
+  llvm::errs() << "\nWrite Time Complexity:\n";
+  for (auto &tc : write_tc)
+  {
+    llvm::errs() << tc.first.toString() << "\t|\t" << tc.second << "\n";
   }
 
 //  for (auto &entry : write_count_map_)
