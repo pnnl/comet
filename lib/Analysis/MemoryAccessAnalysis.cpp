@@ -18,9 +18,9 @@ using namespace mlir::memref;
 using namespace mlir::affine;
 
 // *********** For debug purpose *********//
-#define COMET_DEBUG_MODE
-#include "comet/Utils/debug.h"
+//#define COMET_DEBUG_MODE
 //#undef COMET_DEBUG_MODE
+#include "comet/Utils/debug.h"
 // *********** For debug purpose *********//
 
 namespace
@@ -30,7 +30,7 @@ namespace
   {
 
     // A map to store the frequency of accesses for each memory location.
-    llvm::DenseMap<Value, int> accessFrequencyMap;
+//    llvm::DenseMap<Value, int> accessFrequencyMap;
 
     llvm::DenseMap<Value, std::string> object_name_map_;
     llvm::DenseMap<Value, comet::TimeComplexity> read_count_map_;
@@ -45,11 +45,11 @@ namespace
     //   return "Test alias analysis extending.";
     // }
 
-    void incrementAccessFrequency(Value memref, int64_t count);
-    int64_t calculateConditionFactor(Operation *op, int64_t iterations);
-    int64_t estimateAccessMultiplierFromAffineMap(AffineMap affineMap);
-    void estimateAccessFrequencyWithAffineMap(Value memref, Operation *op, AffineMap affineMap, int64_t iterations);
-    void estimateAccessFrequency(Value memref, Operation *op, int64_t iterations);
+//    void incrementAccessFrequency(Value memref, int64_t count);
+//    int64_t calculateConditionFactor(Operation *op, int64_t iterations);
+//    int64_t estimateAccessMultiplierFromAffineMap(AffineMap affineMap);
+//    void estimateAccessFrequencyWithAffineMap(Value memref, Operation *op, AffineMap affineMap, int64_t iterations);
+//    void estimateAccessFrequency(Value memref, Operation *op, int64_t iterations);
 
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(MemoryAccessFreqeuncyAnalysisPass)
     void runOnOperation() override;
@@ -112,13 +112,64 @@ namespace mlir
     {
       llvm::errs() << toString() << "\n";
     }
+
+    bool TimeFactor::isConstantFloat() const
+    {
+
+      if (this->isConstant() && name_.find('.') != std::string::npos)
+      {
+        return true;
+      }
+      else
+      {
+        return false;
+      }
+    }
+
+    void TimeFactor::addConstant(const mlir::comet::TimeFactor &factor)
+    {
+      assert(kind_ == Constant && "Error: this kind is not constant.");
+      assert(factor.getKind() == Constant && "Error: the factor is not constant.");
+
+      if (this->isConstantFloat() || factor.isConstantFloat())
+      {
+        double old_value = std::stod(name_);
+        double new_value = old_value + std::stod(factor.getName());
+        name_ = std::to_string(new_value);
+      }
+      else
+      {
+        auto old_value = std::stoull(name_);
+        auto new_value = old_value + std::stoull(factor.getName());
+        name_ = std::to_string(new_value);
+      }
+    }
+
+    void TimeFactor::multiplyConstant(const mlir::comet::TimeFactor &factor)
+    {
+      assert(kind_ == Constant && "Error: this kind is not constant.");
+      assert(factor.getKind() == Constant && "Error: the factor is not constant.");
+
+      if (this->isConstantFloat() || factor.isConstantFloat())
+      {
+        double old_value = std::stod(name_);
+        double new_value = old_value * std::stod(factor.getName());
+        name_ = std::to_string(new_value);
+      }
+      else
+      {
+        auto old_value = std::stoull(name_);
+        auto new_value = old_value * std::stoull(factor.getName());
+        name_ = std::to_string(new_value);
+      }
+    }
     /// End class TimeFactor
 
     /// -------------------- ///
     /// class TimeTerm
     /// -------------------- ///
 
-    const TimeFactor TimeTerm::getFactor(uint64_t index) const
+    const TimeFactor &TimeTerm::getFactor(uint64_t index) const
     {
       assert(index < factors_.size() && "Error: index >= factors_.size()");
       return factors_[index];
@@ -150,41 +201,18 @@ namespace mlir
     /// Add factor to the term. The Constant factor, if existed, should always be the first factor in the term.
     void TimeTerm::addFactor(const TimeFactor &factor)
     {
-      auto isFloat =
-        [&](std::string text) -> bool
-        {
-          if (text.find('.') != std::string::npos)
-          {
-            return true;
-          }
-          else
-          {
-            return false;
-          }
-        };
       if (factor.isConstant())
       {
-        /// If factor is a Constant, then try to update the existing constant factor
+        /// If factor is a Constant, then try to update the existing constant factor.
         if (hasConstant_)
         {
           /// Update the existing constant factor
           TimeFactor &c = factors_.front();
-          if (isFloat(c.getName()) || isFloat(factor.getName()))
-          {
-            float old_value = std::stof(c.getName());
-            float new_value = old_value * std::stof(factor.getName());
-            c.setName(std::to_string(new_value));
-          }
-          else
-          {
-            auto old_value = std::stoull(c.getName());
-            auto new_value = old_value * std::stoull(factor.getName());
-            c.setName(std::to_string(new_value));
-          }
+          c.multiplyConstant(factor);
         }
         else
         {
-          /// This factor is the first constant factor, and put it on the front;
+          /// This factor is the first constant factor, and put it on the front.
           factors_.insert(factors_.begin(), factor);
           hasConstant_ = true;
         }
@@ -214,12 +242,9 @@ namespace mlir
     /// If has only one single constant factor, return true, otherwise false
     bool TimeTerm::isSingleConstant() const
     {
-      if (factors_.size() == 1)
+      if (factors_.size() == 1 && factors_.front().isConstant())
       {
-        if (factors_.front().isConstant())
-        {
-          return true;
-        }
+        return true;
       }
       return false;
     }
@@ -270,20 +295,29 @@ namespace mlir
       }
     }
 
+    /// Add term to the time complexity. The constant term, if existed, should always be the first term.
     void TimeComplexity::addTerm(const TimeTerm &term)
     {
-      /// If current time complexity only contains a single constant and the new term is also a single constant,
-      /// then update the constant factor.
-      if (terms_.size() == 1 && terms_.front().isSingleConstant() && term.isSingleConstant())
+      if (term.isSingleConstant())
       {
-        TimeFactor new_factor = terms_.front().getFactor(0);
-        auto old_value = std::stoull(new_factor.getName());
-        auto new_value = old_value + std::stoull(term.getFactors().front().getName());
-        new_factor.setName(std::to_string(new_value));
-        terms_.front().setFactor(0, new_factor);
-        return;
+        if (hasConstant_)
+        {
+          /// Update the existing constant term
+          TimeFactor factor = terms_.front().getFactor(0);
+          factor.addConstant(term.getFactor(0));
+          terms_.front().setFactor(0, factor);
+        }
+        else
+        {
+          /// This term is the first constant term, and put it on the front.
+          hasConstant_ = true;
+          terms_.insert(terms_.begin(), term);
+        }
       }
-      terms_.push_back(term);
+      else
+      {
+        terms_.push_back(term);
+      }
       /// locMaxTerm_ pointer to the largest term.
       if (terms_.size() == 1)
       {
@@ -296,6 +330,32 @@ namespace mlir
           locMaxTerm_ = terms_.size() - 1;
         }
       }
+
+//      //////////////////
+//      /// If current time complexity only contains a single constant and the new term is also a single constant,
+//      /// then update the constant factor.
+//      if (terms_.size() == 1 && terms_.front().isSingleConstant() && term.isSingleConstant())
+//      {
+//        TimeFactor new_factor = terms_.front().getFactor(0);
+//        auto old_value = std::stoull(new_factor.getName());
+//        auto new_value = old_value + std::stoull(term.getFactors().front().getName());
+//        new_factor.setName(std::to_string(new_value));
+//        terms_.front().setFactor(0, new_factor);
+//        return;
+//      }
+//      terms_.push_back(term);
+//      /// locMaxTerm_ pointer to the largest term.
+//      if (terms_.size() == 1)
+//      {
+//        locMaxTerm_ = 0;
+//      }
+//      else
+//      {
+//        if (term > terms_[locMaxTerm_])
+//        {
+//          locMaxTerm_ = terms_.size() - 1;
+//        }
+//      }
     }
 
     std::string TimeComplexity::toString() const
@@ -422,8 +482,25 @@ namespace
   /// Convert a boundary (lowerBound or upperBound) to a string
   std::string getBoundaryStr(Value &value, bool &is_number /*output*/)
   {
+    comet_vdump(value);
     is_number = false;
-    if (auto cio = mlir::dyn_cast<arith::ConstantIndexOp>(value.getDefiningOp()))
+    if (mlir::isa<BlockArgument>(value))
+    /// Boundary is a outer-level loop's iterator variable
+    {
+      /// For example,
+      /// scf.for %arg0 = %c0_3 to %c2000_4 step %c1_5 {
+      ///   %c0_6 = arith.constant 0 : index
+      ///   %c1_7 = arith.constant 1 : index
+      ///   scf.for %arg1 = %c0_6 to %arg0 step %c1_7 { ... }}
+      /// Here %arg0 is a boundary of the inner for-loop, and also the iterator variable of the outer for-loop.
+      /// Then dyn_cast<...>(value.getDefiningOp()) would crash.
+      auto parentOp = value.getParentBlock()->getParentOp();
+      std::string boundary_str = getForLoopIteratorName(parentOp);
+      comet_debug() << boundary_str << "\n";
+      return boundary_str;
+    }
+    else if (auto cio = mlir::dyn_cast<arith::ConstantIndexOp>(value.getDefiningOp()))
+    /// Boundary is a constant
     {
       comet_vdump(cio);
       /// Get ConstantIndexOp's constant value.
@@ -442,6 +519,7 @@ namespace
       }
     }
     else if (auto mlo = mlir::dyn_cast<memref::LoadOp>(value.getDefiningOp()))
+    /// Boundary is a memref.load from a memref.alloc.
     {
       /// For example,
       /// %16 = memref.load %alloc_9[%14] : memref<?xindex>
@@ -775,58 +853,58 @@ namespace
     comet_vdump(write_TC);
   }
 } /// End anonymous namespace
-void MemoryAccessFreqeuncyAnalysisPass::incrementAccessFrequency(Value memref, int64_t count)
-{
-  comet_debug() << "before adding incrementAccessFrequency:" << accessFrequencyMap[memref] << "\n";
-  accessFrequencyMap[memref] += count;
-  comet_debug() << "input incrementAccessFrequency:" << count << "\n";
-  comet_debug() << "after adding incrementAccessFrequency:" << accessFrequencyMap[memref] << "\n";
-}
+//void MemoryAccessFreqeuncyAnalysisPass::incrementAccessFrequency(Value memref, int64_t count)
+//{
+//  comet_debug() << "before adding incrementAccessFrequency:" << accessFrequencyMap[memref] << "\n";
+//  accessFrequencyMap[memref] += count;
+//  comet_debug() << "input incrementAccessFrequency:" << count << "\n";
+//  comet_debug() << "after adding incrementAccessFrequency:" << accessFrequencyMap[memref] << "\n";
+//}
 
-int64_t MemoryAccessFreqeuncyAnalysisPass::calculateConditionFactor(Operation *op, int64_t iterations)
-{
-  int64_t conditionFactor = 1;
+//int64_t MemoryAccessFreqeuncyAnalysisPass::calculateConditionFactor(Operation *op, int64_t iterations)
+//{
+//  int64_t conditionFactor = 1;
+//
+//  if (auto ifOp = op->getParentOfType<AffineIfOp>())
+//  {
+//    conditionFactor = iterations / 2;
+//  }
+//  else
+//  {
+//    conditionFactor = iterations;
+//  }
+//
+//  return conditionFactor;
+//}
 
-  if (auto ifOp = op->getParentOfType<AffineIfOp>())
-  {
-    conditionFactor = iterations / 2;
-  }
-  else
-  {
-    conditionFactor = iterations;
-  }
+//// Estimate the effect of the affine map on access frequency.
+//int64_t MemoryAccessFreqeuncyAnalysisPass::estimateAccessMultiplierFromAffineMap(AffineMap affineMap)
+//{
+//  // TODO(gkestor): need better heuristics
+//  // Simple heuristic: This is a heuristic that assumes each result of the affine map corresponds to a distinct access.
+//  // The actual effect might be more complex, especially for multi-dimensional accesses, but this provides a basic approach.
+//  return affineMap.getNumResults();
+//}
 
-  return conditionFactor;
-}
+//// Estimate access frequency considering affine maps.
+//void MemoryAccessFreqeuncyAnalysisPass::estimateAccessFrequencyWithAffineMap(Value memref, Operation *op, AffineMap affineMap, int64_t iterations)
+//{
+//  int64_t conditionFactor = calculateConditionFactor(op, iterations);
+//
+//  // Consider the complexity of the affine map.
+//  int64_t accessMultiplier = 1;
+//  accessMultiplier = estimateAccessMultiplierFromAffineMap(affineMap);
+//  comet_vdump(memref);
+//  comet_debug() << "incrementAccessFrequency before calling:" << conditionFactor * accessMultiplier << " \n";
+//  incrementAccessFrequency(memref, conditionFactor * accessMultiplier);
+//}
 
-// Estimate the effect of the affine map on access frequency.
-int64_t MemoryAccessFreqeuncyAnalysisPass::estimateAccessMultiplierFromAffineMap(AffineMap affineMap)
-{
-  // TODO(gkestor): need better heuristics
-  // Simple heuristic: This is a heuristic that assumes each result of the affine map corresponds to a distinct access.
-  // The actual effect might be more complex, especially for multi-dimensional accesses, but this provides a basic approach.
-  return affineMap.getNumResults();
-}
-
-// Estimate access frequency considering affine maps.
-void MemoryAccessFreqeuncyAnalysisPass::estimateAccessFrequencyWithAffineMap(Value memref, Operation *op, AffineMap affineMap, int64_t iterations)
-{
-  int64_t conditionFactor = calculateConditionFactor(op, iterations);
-
-  // Consider the complexity of the affine map.
-  int64_t accessMultiplier = 1;
-  accessMultiplier = estimateAccessMultiplierFromAffineMap(affineMap);
-  comet_vdump(memref);
-  comet_debug() << "incrementAccessFrequency before calling:" << conditionFactor * accessMultiplier << " \n";
-  incrementAccessFrequency(memref, conditionFactor * accessMultiplier);
-}
-
-// Estimate the access frequency for the given memory location considering conditions.
-void MemoryAccessFreqeuncyAnalysisPass::estimateAccessFrequency(Value memref, Operation *op, int64_t iterations)
-{
-  int64_t conditionFactor = calculateConditionFactor(op, iterations);
-  incrementAccessFrequency(memref, conditionFactor);
-}
+//// Estimate the access frequency for the given memory location considering conditions.
+//void MemoryAccessFreqeuncyAnalysisPass::estimateAccessFrequency(Value memref, Operation *op, int64_t iterations)
+//{
+//  int64_t conditionFactor = calculateConditionFactor(op, iterations);
+//  incrementAccessFrequency(memref, conditionFactor);
+//}
 
 void MemoryAccessFreqeuncyAnalysisPass::runOnOperation()
 {
@@ -838,7 +916,8 @@ void MemoryAccessFreqeuncyAnalysisPass::runOnOperation()
 
   // Get the current function.
   func::FuncOp function = getOperation();
-  comet_vdump(function);
+  comet_vdump(function->getParentOfType<ModuleOp>());
+//  comet_vdump(function);
   function.walk(
     [&](mlir::Operation *op)
     {
@@ -862,6 +941,9 @@ void MemoryAccessFreqeuncyAnalysisPass::runOnOperation()
   );
 
   /// dump maps
+  if (read_count_map_.empty()) {
+    return;
+  }
   llvm::errs() << "####====---------------------------------====####\n";
   std::vector<std::pair<comet::TimeComplexity, std::string>> read_tc;
   std::vector<std::pair<comet::TimeComplexity, std::string>> write_tc;

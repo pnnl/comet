@@ -428,6 +428,12 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
 
   if (AnalysisMemAccessFrequency)
   {
+    /// TODO: how to add passes to do
+    /// $ mlir-opt -inline='op-pipelines=func.func(canonicalize,cse)'
+//    optPM.addPass(mlir::createInlinerPass());
+//    mlir::OpPassManager &inlinePipeline = optPM.nest<mlir::func::FuncOp>();
+//    inlinePipeline.addPass(mlir::createCanonicalizerPass());
+//    inlinePipeline.addPass(mlir::createCSEPass());
     optPM.addPass(mlir::comet::createMemoryAccessFrequencyAnalysisPass());
   }
 

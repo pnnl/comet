@@ -38,6 +38,22 @@ namespace mlir
     /// 2. var, e.g., O(%alloc[%c4])
     /// 3. var - var, e.g., O(%alloc_9[%14]-%alloc_9[%arg0])
     /// 4. var - const, e.g., O(%alloc[%c4] - 4) (this is very rare)
+    /// Rules, from the smallest unit Factor to Complexity
+    /// Factor: const, var, (var – var), (var – const), ...
+    /// - Kind: Constant or Variable
+    /// - If both are Constant, compare the constant values
+    /// - If one Constant and One Variable, Variable is greater
+    /// - If both are Variable, neither greater or less
+    /// - Have a Priority interface for further comparison
+    /// Term:
+    /// - Guarantee the Constant factor is always the first one if exists
+    /// - If two Factors’ length are different, the longer one is greater
+    /// - Otherwise compare their Factors linearly (as std::vector)
+    /// Complexity:
+    /// - Guarantee the Constant term is always the first one if exists
+    /// - Compare two’s greatest Terms
+    ///
+    ///
     /// -------------------- ///
     /// class TimeFactor
     /// -------------------- ///
@@ -119,6 +135,8 @@ namespace mlir
         return kind_ == Constant;
       }
 
+      bool isConstantFloat() const;
+
       bool isVariable() const
       {
         return kind_ == Variable;
@@ -129,12 +147,17 @@ namespace mlir
         return name_;
       }
 
+      void addConstant(const TimeFactor &factor);
+
+      void multiplyConstant(const TimeFactor &factor);
+
       void dump() const;
 
     private:
       std::string name_;
       Kind kind_ = Constant;
       float priority_ = 0.0;  /// Used for sorting. The larger priority is considered bigger the TimeFactor.
+
 
     };  /// End class TimeFactor
 
@@ -149,7 +172,7 @@ namespace mlir
         return factors_;
       }
 
-      const comet::TimeFactor getFactor(uint64_t index) const;
+      const comet::TimeFactor &getFactor(uint64_t index) const;
 
       void setFactors(const std::vector<TimeFactor> &factors)
       {
@@ -238,7 +261,6 @@ namespace mlir
 
       void addTerm(const TimeTerm &term);
 
-
       std::string toString() const;
 
       void dump() const;
@@ -246,6 +268,7 @@ namespace mlir
     private:
       std::vector<TimeTerm> terms_;
       uint64_t locMaxTerm_ = (uint64_t) -1;  /// pointer to the largest term
+      bool hasConstant_ = false;
     };  /// End class TimeComplexity
   } // namespace comet
 } // namespace mlir
