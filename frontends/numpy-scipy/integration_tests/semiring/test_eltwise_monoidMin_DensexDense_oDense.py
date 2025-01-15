@@ -12,6 +12,7 @@ def run_comet(A,B):
 A = np.full((4,4), 2.7)
 B = np.full((4,4), 3.2)
 
-res = run_comet(A,B)
-expected = np.array([2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7]).reshape((4,4))
-np.testing.assert_almost_equal(res, expected)
+def test_eltwise_monoidMin_DensexDense_oDense():
+    res = run_comet(A,B)
+    expected = np.array([2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7,2.7]).reshape((4,4))
+    np.testing.assert_almost_equal(res, expected)

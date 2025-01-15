@@ -32,9 +32,15 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/SmallVector.h"
+#include <memory>
 
 using namespace mlir;
 using namespace mlir::arith;
@@ -70,25 +76,96 @@ namespace
       Location loc = op->getLoc();
       auto module = op->getParentOfType<ModuleOp>();
       auto *ctx = op->getContext();
-      FloatType f64Type = FloatType::getF64(ctx);
-      IndexType indexType = IndexType::get(ctx);
-      Type unrankedMemrefType_f64 = UnrankedMemRefType::get(f64Type, 0);
 
-      auto printTensorF64Func = FunctionType::get(ctx, {mlir::UnrankedMemRefType::get(f64Type, 0)}, {});
-      auto printTensorIndexFunc = FunctionType::get(ctx, {mlir::UnrankedMemRefType::get(indexType, 0)}, {});
-      auto printScalarFunc = FunctionType::get(ctx, {FloatType::getF64(ctx)}, {});
-
-      func::FuncOp print_func;
+      
       auto inputType = op->getOperand(0).getType();
 
-      /// If the Input type is scalar (F64)
-      if (inputType.isa<FloatType>())
+      if(ShapedType shaped_type = mlir::dyn_cast<ShapedType>(inputType))
       {
-        std::string print_scalar_f64Str = "printF64";
-        std::string print_newline_Str = "printNewline";
-        if (!hasFuncDeclaration(module, "printF64"))
+        auto unrankedMemrefType = mlir::UnrankedMemRefType::get(shaped_type.getElementType(), 0);
+        auto printTensor = FunctionType::get(ctx, {unrankedMemrefType}, {});
+
+        std::string comet_print; //_f64Str = "comet_print_memref_f64";
+        if(shaped_type.getElementType().isF32())
         {
-          print_func = func::FuncOp::create(loc, print_scalar_f64Str, printScalarFunc, ArrayRef<NamedAttribute>{});
+          comet_print = "comet_print_memref_f32";
+        }
+        else if(shaped_type.getElementType().isF64())
+        {
+          comet_print = "comet_print_memref_f64";
+        }
+        else if(shaped_type.getElementType().isInteger(64))
+        {
+          comet_print = "comet_print_memref_i64";
+        }
+        else if(shaped_type.getElementType().isIndex())
+        {
+          comet_print = "comet_print_memref_index";
+        }
+        else if(shaped_type.getElementType().isInteger(32))
+        {
+          comet_print = "comet_print_memref_i32";
+        }
+        else 
+        {
+          assert(false && "Unexpected type to print");
+        }
+
+
+        if (!hasFuncDeclaration(module, comet_print))
+        {
+          func::FuncOp print_func = func::FuncOp::create(loc, comet_print, printTensor, ArrayRef<NamedAttribute>{});
+          print_func.setPrivate();
+          module.push_back(print_func);
+        }
+
+        if (inputType.isa<MemRefType>())
+        {
+          auto alloc_op = cast<memref::AllocOp>(op->getOperand(0).getDefiningOp());
+          comet_vdump(alloc_op);
+          auto u = rewriter.create<memref::CastOp>(loc, unrankedMemrefType, alloc_op);
+          rewriter.create<func::CallOp>(loc, comet_print, SmallVector<Type, 2>{}, ValueRange{u});
+        }
+        else if (inputType.isa<TensorType>())
+        {
+          auto rhs = op->getOperand(0);
+          auto tensor_type = llvm::cast<TensorType>(inputType);
+          auto memref_type = MemRefType::get(tensor_type.getShape(), tensor_type.getElementType());
+          auto buffer = rewriter.create<bufferization::ToMemrefOp>(loc, memref_type, rhs);
+          auto u = rewriter.create<memref::CastOp>(loc, unrankedMemrefType, buffer);
+          rewriter.create<func::CallOp>(loc, comet_print, SmallVector<Type, 2>{}, ValueRange{u});
+        }
+        else
+        {
+          llvm::errs() << __FILE__ << " " << __LINE__ << "Unknown Data type\n";
+        }
+      }
+      /// If the Input type is scalar (F64)
+      else if (inputType.isa<FloatType,IndexType>())
+      {
+        std::string print_scalar; 
+        if(inputType.isF64())
+        {
+          print_scalar = "printF64";
+        }
+        else if (inputType.isF32())
+        {
+          print_scalar = "printF32";
+        }
+        else if (inputType.isIndex())
+        {
+          print_scalar = "printI64";
+        }
+        else 
+        {
+          assert(false && "Unsupported float type");
+        }
+        FunctionType printScalarFunc = FunctionType::get(ctx, {inputType}, {});
+
+        std::string print_newline_Str = "printNewline";
+        if (!hasFuncDeclaration(module, print_scalar))
+        {
+          func::FuncOp print_func = func::FuncOp::create(loc, print_scalar, printScalarFunc, ArrayRef<NamedAttribute>{});
           print_func.setPrivate();
           module.push_back(print_func);
 
@@ -100,74 +177,12 @@ namespace
             module.push_back(print_newline);
           }
         }
-        rewriter.create<func::CallOp>(loc, print_scalar_f64Str, SmallVector<Type, 2>{}, ValueRange{op->getOperand(0)});
+        rewriter.create<func::CallOp>(loc, print_scalar, SmallVector<Type, 2>{}, ValueRange{op->getOperand(0)});
         rewriter.create<func::CallOp>(loc, print_newline_Str, SmallVector<Type, 2>{}, ValueRange{});
       }
-      else
+      else 
       {
-        std::string comet_print_f64Str = "comet_print_memref_f64";
-        if (!hasFuncDeclaration(module, comet_print_f64Str))
-        {
-          print_func = func::FuncOp::create(loc, comet_print_f64Str, printTensorF64Func, ArrayRef<NamedAttribute>{});
-          print_func.setPrivate();
-          module.push_back(print_func);
-        }
-
-        if (inputType.isa<MemRefType>())
-        {
-          auto alloc_op = cast<memref::AllocOp>(op->getOperand(0).getDefiningOp());
-          comet_vdump(alloc_op);
-          auto u = rewriter.create<memref::CastOp>(loc, unrankedMemrefType_f64, alloc_op);
-          rewriter.create<func::CallOp>(loc, comet_print_f64Str, SmallVector<Type, 2>{}, ValueRange{u});
-        }
-        else
-        {
-          /// If the Input type is tensor
-          if (inputType.isa<TensorType>())
-          {
-            auto rhs = op->getOperand(0).getDefiningOp();
-            auto alloc_op = cast<memref::AllocOp>(rhs->getOperand(0).getDefiningOp());
-            comet_vdump(alloc_op);
-            auto u = rewriter.create<memref::CastOp>(loc, unrankedMemrefType_f64, alloc_op);
-            rewriter.create<func::CallOp>(loc, comet_print_f64Str, SmallVector<Type, 2>{}, ValueRange{u});
-          }
-          else if (inputType.isa<SparseTensorType>())
-          {
-            std::string comet_print_i64Str = "comet_print_memref_i64";
-            if (!hasFuncDeclaration(module, comet_print_i64Str))
-            {
-              print_func = func::FuncOp::create(loc, comet_print_i64Str, printTensorIndexFunc, ArrayRef<NamedAttribute>{});
-              print_func.setPrivate();
-              module.push_back(print_func);
-            }
-
-            auto sp_op = cast<tensorAlgebra::SparseTensorConstructOp>(op->getOperand(0).getDefiningOp());
-            Type unrankedMemref_index = mlir::UnrankedMemRefType::get(indexType, 0);
-
-            auto rhs = op->getOperand(0).getDefiningOp();
-            for (int rsize = 0; rsize < sp_op.getDimArrayCount(); rsize += 2)
-            {
-              /// accessing xD_pos array and creating cast op for its alloc
-              auto xD_pos = rhs->getOperand(rsize).getDefiningOp();
-              auto alloc_rhs = cast<memref::AllocOp>(xD_pos->getOperand(0).getDefiningOp());
-              auto u = rewriter.create<memref::CastOp>(loc, unrankedMemref_index, alloc_rhs);
-              rewriter.create<func::CallOp>(loc, comet_print_i64Str, SmallVector<Type, 2>{}, ValueRange{u});
-
-              /// accessing xD_crd array and creating cast op for its alloc
-              auto xD_crd = rhs->getOperand(rsize + 1).getDefiningOp();
-              alloc_rhs = cast<memref::AllocOp>(xD_crd->getOperand(0).getDefiningOp());
-              u = rewriter.create<memref::CastOp>(loc, unrankedMemref_index, alloc_rhs);
-              rewriter.create<func::CallOp>(loc, comet_print_i64Str, SmallVector<Type, 2>{}, ValueRange{u});
-            }
-
-            auto xD_value = rhs->getOperand(sp_op.getValueArrayPos()).getDefiningOp();
-            auto alloc_rhs = cast<memref::AllocOp>(xD_value->getOperand(0).getDefiningOp());
-            auto u = rewriter.create<memref::CastOp>(loc, unrankedMemrefType_f64, alloc_rhs);
-            rewriter.create<func::CallOp>(loc, comet_print_f64Str, SmallVector<Type, 2>{}, ValueRange{u});
-          }
-          else
-            llvm::errs() << __FILE__ << " " << __LINE__ << "Unknown Data type\n";
-        }
+        assert(false && "Unexpected type to print");
       }
 
       /// Notify the rewriter that this operation has been removed.
@@ -348,4 +363,124 @@ void LateLoweringPass::runOnOperation()
 std::unique_ptr<Pass> mlir::comet::createLateLoweringPass()
 {
   return std::make_unique<LateLoweringPass>();
+}
+
+
+namespace
+{
+  struct BufferizeFunc
+      : public PassWrapper<BufferizeFunc, OperationPass<ModuleOp>>
+  {
+    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(BufferizeFunc)
+    void runOnOperation() override;
+  };
+}
+
+
+void BufferizeFunc::runOnOperation()
+{
+  ModuleOp module = getOperation();
+  // func::FuncOp function = getOperation();
+  mlir::OpBuilder builder(module.getContext());
+  auto callOps = module.getOps<func::CallOp>();
+
+  for(func::FuncOp function: module.getOps<func::FuncOp>())
+  {
+    std::vector<Type> newTypes;
+    std::vector<Type> resultTypes;
+    for(auto arg: function.getArguments())
+    {
+      if(RankedTensorType ttype = mlir::dyn_cast<RankedTensorType>(arg.getType()))
+      {
+        auto newType = MemRefType::get(ttype.getShape(), ttype.getElementType());
+        newTypes.push_back(newType);
+      }
+      else
+      {
+        newTypes.push_back(arg.getType());
+      }
+    }
+    for(auto res: function.getResultTypes())
+    {
+      if(RankedTensorType ttype = mlir::dyn_cast<RankedTensorType>(res))
+      {
+        auto newType = MemRefType::get(ttype.getShape(), ttype.getElementType());
+        resultTypes.push_back(newType);
+      }
+      else 
+      {
+        resultTypes.push_back(res);
+      }
+    }
+
+    if(newTypes.empty() && resultTypes.empty())
+    {
+      return;
+    }
+    assert(function.getArguments().size() == newTypes.size());
+    auto newFuncType = builder.getFunctionType(newTypes, resultTypes);
+    function.setType(newFuncType);
+
+    if(!function.isDeclaration()) 
+    {
+      builder.setInsertionPointToStart(&function.getFunctionBody().front());
+      for(auto arg: function.getFunctionBody().getArguments())
+      {
+        if(RankedTensorType ttype = mlir::dyn_cast<RankedTensorType>(arg.getType()))
+        {
+          auto newType = MemRefType::get(ttype.getShape(), ttype.getElementType());
+          arg.setType(newType);
+          ToTensorOp to_tensor = builder.create<bufferization::ToTensorOp>(function->getLoc(), ttype, arg, true, true);
+          arg.replaceAllUsesExcept(to_tensor, to_tensor);
+        }
+      }
+      for(auto& arg: function.getFunctionBody().front().getTerminator()->getOpOperands())
+      {
+        builder.setInsertionPoint(function.getFunctionBody().front().getTerminator());
+        if(RankedTensorType ttype = mlir::dyn_cast<RankedTensorType>(arg.get().getType()))
+        {
+          auto newType = MemRefType::get(ttype.getShape(), ttype.getElementType());
+          ToMemrefOp to_memref = builder.create<bufferization::ToMemrefOp>(function->getLoc(), newType, arg.get());
+          arg.assign(to_memref);
+        }
+      }
+    }
+
+    module->walk([&](mlir::func::CallOp call)
+    {
+      if(call.getCallee() == function.getName())
+      {
+        builder.setInsertionPoint(call);
+        llvm::SmallVector<mlir::Value, 4> newOperands;
+        int argIdx = 0;
+        for (auto oldOperand : call->getOperands()) {
+            if (oldOperand.getType() != newTypes[argIdx]) {
+                auto newOperad = builder.create<bufferization::ToMemrefOp>(function->getLoc(), newTypes[argIdx], oldOperand);
+                newOperands.push_back(newOperad);
+            } else {
+                newOperands.push_back(oldOperand);
+            }
+            argIdx++;
+        }
+
+        auto new_call = builder.create<mlir::func::CallOp>(call.getLoc(), function, newOperands);
+        builder.setInsertionPointAfter(new_call);
+        for(auto res: llvm::zip(call.getResults(), new_call->getResults()))
+        {
+          if(RankedTensorType ttype = mlir::dyn_cast<RankedTensorType>(std::get<0>(res).getType()))
+          {
+            ToTensorOp to_tensor = builder.create<bufferization::ToTensorOp>(function->getLoc(), ttype, std::get<1>(res), true, true);
+            std::get<0>(res).replaceAllUsesExcept(to_tensor, to_tensor);
+          }
+        }
+
+        call.erase();
+      }
+    });
+  }
+}
+
+std::unique_ptr<Pass> mlir::comet::createTABufferizeFunc()
+{
+  return std::make_unique<BufferizeFunc>();
 }

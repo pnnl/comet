@@ -29,35 +29,16 @@
 #define TA_OPS
 
 
-include "mlir/IR/OpBase.td" 
+include "mlir/IR/OpBase.td"
 include "mlir/Interfaces/FunctionInterfaces.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Interfaces/CastInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
-/// Provide a definition of the 'TA' dialect in the ODS framework so that we
-/// can define our operations.
-def TA_Dialect : Dialect {
-  let name = "ta";
-  let cppNamespace = "::mlir::tensorAlgebra"; 
-
-  /// We set this bit to generate the declarations for the dialect's type parsing
-  /// and printing hooks.
-  let useDefaultTypePrinterParser = 1;
-  
-}
-
-/// An implementation of IndexLabelType.
-def TA_IndexLabelType :
-    DialectType<TA_Dialect,
-                CPred<"$_self.isa<IndexLabelType>()">,
-                "IndexLabelType">;
-
-
-/// Whether a type is a IndexLabelType.
-def TAIsIndexLabelTypePred : CPred<"$_self.isa<IndexLabelType>()">;
-def IndexLabel : Type<TAIsIndexLabelTypePred, "indexlabel">;
+include "comet/Dialect/TensorAlgebra/IR/TABase.td"
+include "comet/Dialect/TensorAlgebra/IR/TATypes.td"
+include "comet/Dialect/TensorAlgebra/IR/TAAttrs.td"
 
 /// Base class for ta dialect operations. This operation inherits from the base
 /// `Op` class in OpBase.td, and provides:
@@ -67,14 +48,33 @@ def IndexLabel : Type<TAIsIndexLabelTypePred, "indexlabel">;
 class TA_Op<string mnemonic, list<Trait> traits = []> :
     Op<TA_Dialect, mnemonic, traits>;
 
-/// Provide a definition for the TA SparseTensorType for use in ODS. 
-/// This allows for using SparseTensorType in a similar way to Tensor or MemRef.
-def SparseTensor :
-    Type<CPred<"$_self.isa<SparseTensorType>()">, "TA sparse tensor type">;
+//===----------------------------------------------------------------------===//
+/// Tensor Algebra Operations
+//===----------------------------------------------------------------------===//
+def IndexLabelStaticOp :
+    TA_Op<"static_index_label", [Pure]>,
+    Arguments<(ins Index:$min, Index:$max, Index:$step)>,
+    Results<(outs Range)> {
+  let summary = "Create an index label type value, used to create views";
+  let description = [{
+    The `ta.static_index_label` op creates a ta.static_index_label from 3 values of type `index`
+    that represent the min, max and step values of a range.
 
-/// Provide a definition of the types that are used within the TA dialect.
-def TA_AnyTensor : AnyTypeOf<[TensorOf<[AnyType]>, SparseTensor]>;
+    Example:
 
+      %3 = ta.static_index_label %0:%1:%2 : !ta.index_label
+  }];
+
+  let builders = [OpBuilder<(ins "Value":$min, "Value":$max, "Value":$step), 
+    [{
+      auto rangeType = RangeType::get($_builder.getContext());
+      build($_builder, $_state, rangeType, min, max, step);
+    }]>];
+  
+
+  //TODO(gkestor): add verifier
+  //let hasVerifier = 1;
+}
 
 //===----------------------------------------------------------------------===//
 /// Tensor Algebra Operations
@@ -152,23 +152,23 @@ def SparseTensorDeclOp : TA_Op<"spTensor_decl", [Pure]> {
 
   let extraClassDeclaration = [{
     unsigned int getParameterCount() {
-        mlir::TensorType type = getResult().getType().cast<TensorType>();
+        mlir::tensorAlgebra::SparseTensorType type = getResult().getType().cast<mlir::tensorAlgebra::SparseTensorType>();
         return (type.getRank() * 6) + 1;
     }
 
     unsigned int getDimArrayCount() {
-        mlir::TensorType type = getResult().getType().cast<TensorType>();
+        mlir::tensorAlgebra::SparseTensorType type = getResult().getType().cast<mlir::tensorAlgebra::SparseTensorType>();
         return type.getRank() * 4;
     }
 
     unsigned int getValueArrayPos() {
-        mlir::TensorType type = getResult().getType().cast<TensorType>();
+        mlir::tensorAlgebra::SparseTensorType type = getResult().getType().cast<mlir::tensorAlgebra::SparseTensorType>();
 
         return (type.getRank() * 4) + 1;
     }
 
     unsigned int getTotalArrayCount() {
-        mlir::TensorType type = getResult().getType().cast<TensorType>();
+        mlir::tensorAlgebra::SparseTensorType type = getResult().getType().cast<mlir::tensorAlgebra::SparseTensorType>();
         return (type.getRank() * 4) + 1;
     }
   }];
@@ -198,7 +198,7 @@ def SparseOutputTensorDeclOp : TA_Op<"sparse_output_tensor_decl", [Pure]> {
   let arguments = (ins Variadic<Index>:$labels, StrAttr:$format);
 
   /// The constant operation returns a single value of TensorType.
-  let results = (outs AnyTensor);
+  let results = (outs TA_AnyTensor);
 
   /// Invoke a static verify method to verify this constant operation.
   
@@ -228,7 +228,7 @@ def TempSparseOutputTensorDeclOp : TA_Op<"temp_sparse_output_tensor_decl", [Pure
   let arguments = (ins Variadic<Index>:$labels, StrAttr:$format);
 
   /// The constant operation returns a single value of TensorType.
-  let results = (outs AnyTensor);
+  let results = (outs TA_AnyTensor);
 
   //TODO(gkestor): add verifier
   //let hasVerifier = 1;
@@ -275,7 +275,7 @@ def DenseConstantOp : TA_Op<"constant", [Pure]> {
   let hasVerifier = 1;
 }
 
-def SparseTensorConstructOp : TA_Op<"spTensor_construct", [Pure]>{
+def SparseTensorConstructOp : TA_Op<"spTensor_construct", [SameVariadicOperandSize]>{
 
   let summary = "";
   let description = [{
@@ -291,12 +291,12 @@ def SparseTensorConstructOp : TA_Op<"spTensor_construct", [Pure]>{
   //Aval_size (size of value array) 
   //dim1_size, dim2_size (size of each dimension in sparse tensor) 
   //TODO(gkestor): might be better to have a struct with all the data elements
-  let arguments = (ins Variadic<AnyType>:$indices, I32Attr:$tensor_rank);
+  let arguments = (ins TensorOf<[Index]>:$dims, Variadic<TensorOf<[AnySignlessIntegerOrIndex]>>:$pos_indices, Variadic<TensorOf<[AnySignlessIntegerOrIndex]>>:$crd_indices, Variadic<TensorOf<[AnySignlessIntegerOrIndex]>>:$block_pos_indices, Variadic<TensorOf<[AnySignlessIntegerOrIndex]>>:$block_crd_indices, TA_FloatTensor:$vals, I32Attr:$tensor_rank, TAFormatArrayAttr:$dimension_formats);
   let results = (outs TA_AnyTensor:$output);
 
-  let assemblyFormat = [{
-    `(` $indices `)` attr-dict `:` `(` type($indices) `)` `->` `(` type($output) `)`
-  }];
+  // let assemblyFormat = [{
+  //   `(` $indices `)` attr-dict `:` `(` type($indices) `)` `->` `(` type($output) `)`
+  // }];
 
   // TODO(pflynn) This may need to be adjusted
   // This works for the moment; the idea is that each rank has a block
@@ -330,7 +330,7 @@ def SparseTensorConstructOp : TA_Op<"spTensor_construct", [Pure]>{
   
 }
 
-def TensorFillOp : TA_Op<"fill", [Pure]>{
+def TensorFillOp : TA_Op<"fill">{
   
   let summary = "";
   let description = [{
@@ -358,13 +358,29 @@ def TensorMultOp : TA_Op<"mul", [Pure, AttrSizedOperandSegments]>{
   let results = (outs TA_AnyTensor);
 
   let extraClassDeclaration = [{
+      template<typename T>
+    size_t getTensorRank(T tensor)
+    {
+      if(auto denseT = mlir::dyn_cast<TensorType>(tensor.getType()))
+      {
+        return denseT.getRank();
+      }
+      else if(auto sparseT = mlir::dyn_cast<SparseTensorType>(tensor.getType()))
+      {
+        return sparseT.getRank();
+      }
+      else
+      {
+        assert(false&& "Unexpected Type");
+      }
+    }
+
     std::vector<mlir::Value> getRhs1IndexLabels()
     {
       std::vector<mlir::Value> labels;
       size_t start = 0;
 
-      mlir::TensorType type = getRhs1().getType().cast<TensorType>();
-      size_t end = type.getRank();
+      size_t end = getTensorRank(getRhs1());
 
       for(size_t i = start; i < end; i++ )
       {
@@ -378,13 +394,11 @@ def TensorMultOp : TA_Op<"mul", [Pure, AttrSizedOperandSegments]>{
     std::vector<mlir::Value> getRhs2IndexLabels()
     {
       std::vector<mlir::Value> labels;
-      
-      mlir::TensorType type1 = getRhs1().getType().cast<TensorType>();
-      mlir::TensorType type2 = getRhs2().getType().cast<TensorType>();
 
-      size_t start = type1.getRank();
+
+      size_t start =getTensorRank(getRhs1());
       
-      size_t end = static_cast<size_t>(type1.getRank() + type2.getRank());
+      size_t end = getTensorRank(getRhs1()) + getTensorRank(getRhs2());
 
       for(size_t i = start; i < end; i++ )
       {
@@ -400,10 +414,7 @@ def TensorMultOp : TA_Op<"mul", [Pure, AttrSizedOperandSegments]>{
       std::vector<mlir::Value> labels;
       size_t end = getIndexLabels().size();
       
-      mlir::TensorType type1 = getRhs1().getType().cast<TensorType>();
-      mlir::TensorType type2 = getRhs2().getType().cast<TensorType>();
-
-      size_t start = type1.getRank() + type2.getRank();
+      size_t start = getTensorRank(getRhs1()) + getTensorRank(getRhs2());
 
       for(size_t i = start; i < end; i++ )
       {
@@ -436,13 +447,28 @@ def TensorElewsMultOp : TA_Op<"elews_mul", [Pure]>{
   let results = (outs TA_AnyTensor);
 
   let extraClassDeclaration = [{
+    template<typename T>
+    size_t getTensorRank(T tensor)
+    {
+      if(auto denseT = mlir::dyn_cast<TensorType>(tensor.getType()))
+      {
+        return denseT.getRank();
+      }
+      else if(auto sparseT = mlir::dyn_cast<SparseTensorType>(tensor.getType()))
+      {
+        return sparseT.getRank();
+      }
+      else
+      {
+        assert(false&& "Unexpected Type");
+      }
+    }
 
     std::vector<mlir::Value> getRhs1IndexLabels()
     {
       std::vector<mlir::Value> labels;
       size_t start = 0;
-      mlir::TensorType type = getRhs1().getType().cast<TensorType>();
-      size_t end = type.getRank();
+      size_t end = getTensorRank(getRhs1());
 
       for(size_t i = start; i < end; i++ )
       {
@@ -456,11 +482,9 @@ def TensorElewsMultOp : TA_Op<"elews_mul", [Pure]>{
     std::vector<mlir::Value> getRhs2IndexLabels()
     {
       std::vector<mlir::Value> labels;
-      mlir::TensorType type1 = getRhs1().getType().cast<TensorType>();
-      mlir::TensorType type2 = getRhs2().getType().cast<TensorType>();
-      size_t start = type1.getRank();
+      size_t start = getTensorRank(getRhs1());
       
-      size_t end = static_cast<size_t>(type1.getRank() + type2.getRank());
+      size_t end = getTensorRank(getRhs1()) + getTensorRank(getRhs2());
       
       for(size_t i = start; i < end; i++ )
       {
@@ -476,9 +500,7 @@ def TensorElewsMultOp : TA_Op<"elews_mul", [Pure]>{
       std::vector<mlir::Value> labels;
       size_t end = getIndexLabels().size();
       
-      mlir::TensorType type1 = getRhs1().getType().cast<TensorType>();
-      mlir::TensorType type2 = getRhs2().getType().cast<TensorType>();
-      size_t start = type1.getRank() + type2.getRank();
+      size_t start = getTensorRank(getRhs1()) + getTensorRank(getRhs2());
       
       
       for(size_t i = start; i < end; i++ )
@@ -517,7 +539,7 @@ def TensorDimOp : TA_Op<"dim", [Pure]>{
 }
 
 
-def TensorSetOp : TA_Op<"set_op", [Pure]>{
+def TensorSetOp : TA_Op<"set_op">{
 
   let summary = "";
   let description = [{
@@ -542,11 +564,28 @@ def TransposeOp : TA_Op<"transpose",[Pure]> {
 
 
   let extraClassDeclaration = [{
+    template<typename T>
+    size_t getTensorRank(T tensor)
+    {
+      if(auto denseT = mlir::dyn_cast<TensorType>(tensor.getType()))
+      {
+        return denseT.getRank();
+      }
+      else if(auto sparseT = mlir::dyn_cast<SparseTensorType>(tensor.getType()))
+      {
+        return sparseT.getRank();
+      }
+      else
+      {
+        assert(false&& "Unexpected Type");
+      }
+    }
+
     std::vector<mlir::Value> getRhsIndexLabels()
     {
       std::vector<mlir::Value> labels;
       size_t start = 0;
-      size_t end = static_cast<size_t>(getRhs().getType().cast<TensorType>().getRank());
+      size_t end = static_cast<size_t>(getTensorRank(getRhs()));
       for(size_t i = start; i < end; i++ )
       {
         labels.push_back(getIndexLabels()[i]);
@@ -559,7 +598,7 @@ def TransposeOp : TA_Op<"transpose",[Pure]> {
     std::vector<mlir::Value> getResultIndexLabels()
     {
       std::vector<mlir::Value> labels;
-      size_t start = static_cast<size_t>(getRhs().getType().cast<TensorType>().getRank());
+      size_t start = static_cast<size_t>(getTensorRank(getRhs()));
       size_t end = getIndexLabels().size();
 
       for(size_t i = start; i < end; i++ )
@@ -580,7 +619,7 @@ def ReduceOp : TA_Op<"reduce",[Pure]> {
 
   let arguments = (ins TA_AnyTensor:$rhs); 
 
-  let results = (outs F64:$lhs);
+  let results = (outs AnyTypeOf<[F32,F64,Index]>:$lhs);
 
   let builders = [OpBuilder<
     (ins "Value":$input)>];
@@ -608,11 +647,28 @@ def TensorAddOp : TA_Op<"add",
   let results = (outs TA_AnyTensor);
 
   let extraClassDeclaration = [{
+    template<typename T>
+    size_t getTensorRank(T tensor)
+    {
+      if(auto denseT = mlir::dyn_cast<TensorType>(tensor.getType()))
+      {
+        return denseT.getRank();
+      }
+      else if(auto sparseT = mlir::dyn_cast<SparseTensorType>(tensor.getType()))
+      {
+        return sparseT.getRank();
+      }
+      else
+      {
+        assert(false&& "Unexpected Type");
+      }
+    }
+
     std::vector<mlir::Value> getRhs1IndexLabels()
     {
       std::vector<mlir::Value> labels;
       size_t start = 0;
-      size_t end = static_cast<size_t>(getRhs1().getType().cast<TensorType>().getRank());
+      size_t end = getTensorRank(getRhs1());
       for(size_t i = start; i < end; i++ )
       {
         labels.push_back(getIndexLabels()[i]);
@@ -625,8 +681,8 @@ def TensorAddOp : TA_Op<"add",
     std::vector<mlir::Value> getRhs2IndexLabels()
     {
       std::vector<mlir::Value> labels;
-      size_t start = static_cast<size_t>(getRhs1().getType().cast<TensorType>().getRank());
-      size_t end = static_cast<size_t>(getRhs1().getType().cast<TensorType>().getRank() + getRhs2().getType().cast<TensorType>().getRank());
+      size_t start = getTensorRank(getRhs1());
+      size_t end = getTensorRank(getRhs1()) + getTensorRank(getRhs2());
       
       for(size_t i = start; i < end; i++ )
       {
@@ -640,7 +696,7 @@ def TensorAddOp : TA_Op<"add",
     std::vector<mlir::Value> getResultIndexLabels()
     {
       std::vector<mlir::Value> labels;
-      size_t start = static_cast<size_t>(getRhs1().getType().cast<TensorType>().getRank() + getRhs2().getType().cast<TensorType>().getRank());
+      size_t start =  getTensorRank(getRhs1()) + getTensorRank(getRhs2());
       size_t end = getIndexLabels().size();
 
       for(size_t i = start; i < end; i++ )
@@ -673,11 +729,28 @@ def TensorSubtractOp : TA_Op<"subtract",
   let results = (outs TA_AnyTensor);
 
   let extraClassDeclaration = [{
+      template<typename T>
+    size_t getTensorRank(T tensor)
+    {
+      if(auto denseT = mlir::dyn_cast<TensorType>(tensor.getType()))
+      {
+        return denseT.getRank();
+      }
+      else if(auto sparseT = mlir::dyn_cast<SparseTensorType>(tensor.getType()))
+      {
+        return sparseT.getRank();
+      }
+      else
+      {
+        assert(false&& "Unexpected Type");
+      }
+    }
+
     std::vector<mlir::Value> getRhs1IndexLabels()
     {
       std::vector<mlir::Value> labels;
       size_t start = 0;
-      size_t end = static_cast<size_t>(getRhs1().getType().cast<TensorType>().getRank());
+      size_t end = getTensorRank(getRhs1());
       for(size_t i = start; i < end; i++ )
       {
         labels.push_back(getIndexLabels()[i]);
@@ -690,8 +763,8 @@ def TensorSubtractOp : TA_Op<"subtract",
     std::vector<mlir::Value> getRhs2IndexLabels()
     {
       std::vector<mlir::Value> labels;
-      size_t start = static_cast<size_t>(getRhs1().getType().cast<TensorType>().getRank());
-      size_t end = static_cast<size_t>(getRhs1().getType().cast<TensorType>().getRank() + getRhs2().getType().cast<TensorType>().getRank());
+      size_t start = getTensorRank(getRhs1());
+      size_t end = getTensorRank(getRhs1()) + getTensorRank(getRhs2());
       
       for(size_t i = start; i < end; i++ )
       {
@@ -705,7 +778,7 @@ def TensorSubtractOp : TA_Op<"subtract",
     std::vector<mlir::Value> getResultIndexLabels()
     {
       std::vector<mlir::Value> labels;
-      size_t start = static_cast<size_t>(getRhs1().getType().cast<TensorType>().getRank() + getRhs2().getType().cast<TensorType>().getRank());
+      size_t start = getTensorRank(getRhs1()) + getTensorRank(getRhs2());
       size_t end = getIndexLabels().size();
 
       for(size_t i = start; i < end; i++ )
@@ -830,7 +903,9 @@ def PrintOp : TA_Op<"print"> {
 
   /// The print operation takes an input tensor to print.
   /// We can extend the list of supported datatype for print with F64Tensor, I8MemRef, I64MemRef, F32MemRef, etc.
-  let arguments = (ins AnyTypeOf<[F64,
+  let arguments = (ins AnyTypeOf<[F32,
+                                  F64,
+                                  F32MemRef, 
                                   F64MemRef, 
                                   TA_AnyTensor]>:$input);
 }
@@ -943,7 +1018,7 @@ def GenericCallOp : TA_Op<"generic_call",
   ];
 }
 
-def TensorFillFromFileOp : TA_Op<"fill_from_file", [Pure]>{
+def TensorFillFromFileOp : TA_Op<"fill_from_file">{
   let summary = "";
   let description = [{
   }];
@@ -967,8 +1042,163 @@ def TensorCopyOp : TA_Op<"copy", [Pure]>{
   //let hasVerifier = 1;
 }
 
+def TensorInsertOp : TA_Op<"TAInsertOp", [Pure, SameVariadicOperandSize]>{
+  let summary = "Insert intro a sparse tensor. Sparse Tensor equivalent of tensor.insert";
+  let description = [{}];
+
+  let arguments = (
+    ins TA_AnyTensor:$tensor, 
+    Variadic<Index>:$pos,
+    Variadic<Index>:$crds,
+    AnyTypeOf<[F32,F64]>:$value
+  );
+
+  let results = (outs TA_AnyTensor);
+}
+
+def TensorExtractOp : TA_Op<"TAExtractOp", [Pure, SameVariadicOperandSize]>{
+  let summary = "Extract from a sparse tensor. Sparse Tensor equivalent of tensor.extract";
+  let description = [{}];
+
+  let arguments = (
+    ins TA_AnyTensor:$tensor, 
+    Index:$pos,
+    Variadic<Index>:$crds,
+    AnyAttrOf<[F32Attr, F64Attr]>:$zero
+  );
+
+  let results = (outs AnyFloat);
+}
+
+def SpTensorAliasOp : TA_Op<"SpTensorAlias", [Pure]>{
+  let arguments = (ins TA_AnyTensor:$tensor);
+  let results = (outs TA_AnyTensor);
+}
+
+def SpTensorGetDimPos : TA_Op<"SpTensorGetDimPos", [Pure]>{
+  let arguments = (ins TA_AnyTensor:$tensor, I32Attr:$dim);
+  let results = (outs TensorOf<[AnyType]>);
+
+  let builders = 
+    [OpBuilder<(ins "Value":$tensor, "IntegerAttr":$dim), [{
+      auto indices_type = tensor.getType().cast<SparseTensorType>().getIndicesType();
+      auto outType =  RankedTensorType::get({ShapedType::kDynamic}, indices_type);
+      build($_builder, $_state, outType, tensor, dim); 
+     }]>,
+     
+    ];
+}
+
+def SpTensorGetDimCrd : TA_Op<"SpTensorGetDimCrd", [Pure]>{
+  let arguments = (ins TA_AnyTensor:$tensor, I32Attr:$dim);
+  let results = (outs TensorOf<[AnyType]>);
+
+  let builders = 
+    [OpBuilder<(ins "Value":$tensor, "IntegerAttr":$dim), [{
+      auto indices_type = tensor.getType().cast<SparseTensorType>().getIndicesType();
+      auto outType =  RankedTensorType::get({ShapedType::kDynamic}, indices_type);
+      build($_builder, $_state, outType, tensor, dim); 
+     }]>];
+}
+
+def SpTensorGetDimBlockPos : TA_Op<"SpTensorGetDimBlockPos", [Pure]>{
+  let arguments = (ins TA_AnyTensor:$tensor, I32Attr:$dim);
+  let results = (outs TensorOf<[AnyType]>);
+
+  let builders = 
+    [OpBuilder<(ins "Value":$tensor, "IntegerAttr":$dim), [{
+      auto indices_type = tensor.getType().cast<SparseTensorType>().getIndicesType();
+      auto outType =  RankedTensorType::get({ShapedType::kDynamic}, indices_type);
+      build($_builder, $_state, outType, tensor, dim); 
+     }]>];
+}
+
+def SpTensorGetDimBlockCrd : TA_Op<"SpTensorGetDimBlockCrd", [Pure]>{
+  let arguments = (ins TA_AnyTensor:$tensor, I32Attr:$dim);
+  let results = (outs TensorOf<[AnyType]>);
+
+  let builders = 
+    [OpBuilder<(ins "Value":$tensor, "IntegerAttr":$dim), [{
+      auto indices_type = tensor.getType().cast<SparseTensorType>().getIndicesType();
+      auto outType =  RankedTensorType::get({ShapedType::kDynamic}, indices_type);
+      build($_builder, $_state, outType, tensor, dim); 
+     }]>];
+}
+
+def SpTensorGetVals : TA_Op<"SpTensorGetVals", [Pure]>{
+  let arguments = (ins TA_AnyTensor:$tensor);
+  let results = (outs TensorOf<[AnyType]>);
+
+
+  let builders = 
+    [OpBuilder<(ins "Value":$tensor), [{
+      auto val_type =  tensor.getType().cast<SparseTensorType>().getElementType();
+      auto outType =  RankedTensorType::get({ShapedType::kDynamic}, val_type);
+      build($_builder, $_state, outType, tensor); 
+     }]>];
+}
+
+def SpTensorGetCrd : TA_Op<"SpTensorGetCrd", [Pure]>{
+  let arguments = (ins TA_AnyTensor:$tensor, Index:$idx, I32Attr:$dim);
+  let results = (outs AnySignlessIntegerOrIndex:$crd);
+
+  let builders = 
+  [OpBuilder<(ins "Value":$tensor, "Value":$idx, "IntegerAttr":$dim), [{
+    ::mlir::IntegerType indices_type;
+    if(auto spTensor = ::mlir::dyn_cast<SparseTensorType>(tensor.getType()))
+    {
+      indices_type = spTensor.getIndicesType();
+    }
+    else if(auto wsTensor = ::mlir::dyn_cast<WorkspaceType>(tensor.getType()))
+    {
+      indices_type = wsTensor.getIndicesType();
+    }
+    else
+    { 
+      assert(false && "Undexpected input type");
+    }
+    build($_builder, $_state, indices_type, tensor, idx, dim); 
+    }]>];
+}
+
+def SpTensorInsertCrd : TA_Op<"SpTensorInsertCrd", [Pure]>{
+  let arguments = (ins TA_AnyTensor:$tensor, I32Attr:$dim, Index:$idx, Index:$crd);
+  let results = (outs TA_AnyTensor:$result);
+}
+
+def SpTensorGetDimSize : TA_Op<"SpTensorGetDimSize", [Pure]>{
+  let arguments = (ins TA_AnyTensor:$tensor, I32Attr:$dim);
+  let results = (outs Index:$result);
+
+  let builders = 
+  [OpBuilder<(ins "Value":$tensor, "IntegerAttr":$dim), [{
+    build($_builder, $_state, $_builder.getIndexType(), tensor, dim); 
+    }]>];
+}
+
+def SpTensorGetNNZ : TA_Op<"SpTensorGetNNZ", [Pure]>{
+  let arguments = (ins TA_AnyTensor:$tensor, OptionalAttr<I32Attr>:$dim);
+  let results = (outs Index:$result);
+}
+
+def TensorFindPos : TA_Op<"TensorFindPos", [Pure]>{
+  let arguments = (ins TA_AnyTensor:$tensor, Optional<Index>:$crd, I32Attr:$dim, DefaultValuedAttr<BoolAttr, "false">:$is_linear);
+  let results = (outs Index:$result);
+}
+
+def AllocWorkspaceOp : TA_Op<"AllocWorkspace", [Pure, SameVariadicOperandSize]>{
+  let summary = "Create a dense workspace to be used as an intermediate output tensor";
+  let description = [{}];
+
+  let arguments = (ins SparseTensor:$tensor, I32ArrayAttr:$dims);
+  let results = (outs WorkspaceTensor:$result);
+}
+
+def WorkspaceClearOp : TA_Op<"WorkspaceClear", [Pure]>{
+  let summary = "Clear the workspace for use in the next iteration";
+  let description = [{}];
+
+  let arguments = (ins WorkspaceTensor:$tensor);
+  let results = (outs WorkspaceTensor:$result);
+}
 #endif /// TA_OPS
-
-
-
-

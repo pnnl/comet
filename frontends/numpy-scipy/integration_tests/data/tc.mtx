@@ -1,0 +1,30 @@
+%%MatrixMarket matrix coordinate real general
+%
+% This is a test sparse matrix in Matrix Market Exchange Format.
+% see https://math.nist.gov/MatrixMarket
+%
+7 7 24
+1 2 1.0
+1 4 1.0
+2 1 1.0
+2 4 1.0
+2 5 1.0
+2 7 1.0
+3 4 1.0
+3 6 1.0
+3 7 1.0
+4 1 1.0
+4 2 1.0
+4 3 1.0
+4 6 1.0
+4 7 1.0
+5 2 1.0
+5 6 1.0
+5 7 1.0
+6 3 1.0
+6 4 1.0
+6 5 1.0
+7 2 1.0
+7 3 1.0
+7 4 1.0
+7 5 1.0

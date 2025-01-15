@@ -483,14 +483,19 @@ struct OptDenseTranspose : public ConversionPattern
     Builder builder(ctx);
     Location loc = op.getLoc();
 
+    //auto module = op->getParentOfType<ModuleOp>();
     comet_vdump(op);
 
-    auto inputType = op->getOperand(0).getType();
+    auto tensorize_input = op->getOperand(0).getDefiningOp();
+    auto inputMemref = tensorize_input->getOperand(0);
+    auto inputType = inputMemref.getType();
+
+    auto tensorize_output = op->getOperand(1).getDefiningOp();
+    auto outputMemref = tensorize_output->getOperand(0);
+
     comet_debug() << " Input Type:\n";
     comet_vdump(inputType);
-    auto inputMemref = op->getOperand(0);
     auto inputRank = inputType.cast<mlir::MemRefType>().getRank();
-    auto outputMemref = op->getOperand(1);
 
     std::vector<AffineForOp> loops;
     std::vector<int64_t> indexIterateOrder;
@@ -521,7 +526,7 @@ struct OptDenseTranspose : public ConversionPattern
     /// Build loop body
     auto load_rhs = rewriter.create<memref::LoadOp>(loc, inputMemref, inputIVs);
     comet_vdump(load_rhs);
-#ifdef DEBUG_MODE_LINALGTRANSFORMS
+#ifdef COMET_DEBUG_MODE
     comet_vdump(load_rhs);
     auto store_lhs = rewriter.create<memref::StoreOp>(loc, load_rhs, outputMemref, outputIVs);
     comet_vdump(store_lhs);
@@ -635,9 +640,10 @@ struct OptDenseTranspose : public ConversionPattern
 
     } /// end loops.size() < 0
 
+    rewriter.replaceAllUsesWith(op->getResult(0), outputMemref);
     rewriter.eraseOp(op);
 
-    /// module.dump();
+    //module.dump();
     return success();
   }
 

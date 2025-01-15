@@ -4,22 +4,23 @@ import scipy as sp
 from cometpy import comet
 
 def run_numpy(A, B):
-	C = A * B.transpose()
+	C = A.transpose() * B
 
 	return C
 
 @comet.compile(flags=None)
 def run_comet_with_jit(A, B):
-	C = A * B.transpose()
+	C = A.transpose() * B
 
 	return C
 
-B = sp.sparse.csr_array(sp.io.mmread("../../../../integration_test/data/test_rank2.mtx"))
-A = np.full([B.shape[1], B.shape[0]], 3.2,  dtype=float)
-expected_result = run_numpy(A, B)
-result_with_jit = run_comet_with_jit(A, B)
-if sp.sparse.issparse(expected_result):
-	expected_result = expected_result.todense()
-if sp.sparse.issparse(result_with_jit):
-	result_with_jit = result_with_jit.todense()
-np.testing.assert_almost_equal(result_with_jit, expected_result)
+def test_dTranspose_eltwise_CSR(data_rank2_path):
+	B = sp.sparse.csr_array(sp.io.mmread(data_rank2_path))
+	A = np.full([B.shape[1], B.shape[0]], 3.2,  dtype=float)
+	expected_result = run_numpy(A, B)
+	result_with_jit = run_comet_with_jit(A, B)
+	if sp.sparse.issparse(expected_result):
+		expected_result = expected_result.todense()
+	if sp.sparse.issparse(result_with_jit):
+		result_with_jit = result_with_jit.todense()
+	np.testing.assert_almost_equal(result_with_jit, expected_result)

@@ -95,6 +95,7 @@ namespace mlir
         std::unique_ptr<Pass> createFuncOpLoweringPass(); // Conversion
 
         std::unique_ptr<Pass> createDimOpLoweringPass();
+        std::unique_ptr<Pass> createTABufferizeFunc();
     }
 
 }

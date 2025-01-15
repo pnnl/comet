@@ -8,10 +8,10 @@ def run_comet(A,B):
 
     return C
 
+def test_eltwise_monoidPlus_DensexDense_oDense():
+    A = np.full((4,4), 2.7)
+    B = np.full((4,4), 3.2)
 
-A = np.full((4,4), 2.7)
-B = np.full((4,4), 3.2)
-
-res = run_comet(A,B)
-expected = np.array([5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9]).reshape((4,4))
-np.testing.assert_almost_equal(res, expected)
+    res = run_comet(A,B)
+    expected = np.array([5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9,5.9]).reshape((4,4))
+    np.testing.assert_almost_equal(res, expected)

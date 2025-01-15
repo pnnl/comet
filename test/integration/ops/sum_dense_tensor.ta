@@ -1,0 +1,22 @@
+# RUN: comet-opt --convert-to-loops --convert-to-llvm %s &> sum_dense_tensor.llvm
+# RUN: mlir-cpu-runner sum_dense_tensor.llvm -O3 -e main -entry-point-result=void -shared-libs=%comet_utility_library_dir/libcomet_runner_utils%shlibext,%mlir_utility_library_dir/libmlir_c_runner_utils%shlibext | FileCheck %s
+
+def main() {
+	#IndexLabel Declarations
+	IndexLabel [i] = [4];
+	IndexLabel [j] = [4];           
+	IndexLabel [k] = [4];           
+
+	#Tensor Declarations
+	Tensor<double> A([i, j, k], {Dense});
+
+    #Tensor Readfile Operation 
+	A[i, j, k] = 3.7;
+
+	#Tensor Transpose
+	var a = SUM(A[i, j, k]);
+	print(a);
+}
+
+# Print the result for verification.
+# CHECK: 236.8

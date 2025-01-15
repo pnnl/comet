@@ -25,16 +25,18 @@
 #define COMET_CONVERSION_TENSORALGEBRATOSCF_H
 
 #include "mlir/Support/LLVM.h"
+#include "mlir/Transforms/DialectConversion.h"
 
 namespace mlir
 {
     class Pass;
-    class RewritePatternSet;
-
+    
     namespace comet
     {
 #define GEN_PASS_DECL_CONVERTTENSORALGEBRATOSCF
 #include "comet/Conversion/Passes.h.inc"
+        void populateSparseTensorConversionPatterns(MLIRContext *context, RewritePatternSet &patterns, TypeConverter &typeConverter);
+        std::unique_ptr<Pass> createSparseTensorConversionPass();
 
         /// Collect a set of patterns to convert remaining TensorAlgebra operations
         /// that are not converted to IndexTree operations to the operations with SCF

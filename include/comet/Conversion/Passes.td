@@ -43,6 +43,19 @@ def ConvertIndexTreeToSCF : Pass<"convert-it-to-scf"> {
   ];
 }
 
+def ConvertSymbolicDomains : Pass<"convert-symbolic-domains"> {
+  let summary = " "
+                "";
+  let description = [{
+
+      }];
+  let constructor = "comet::createConvertSymbolicDomainsPass()";
+  let dependentDialects = [
+    "memref::MemRefDialect",
+    "scf::SCFDialect"
+  ];
+}
+
 //===----------------------------------------------------------------------===//
 // TensorAlgebraToIndexTree
 //===----------------------------------------------------------------------===//
@@ -73,7 +86,22 @@ def ConvertTensorAlgebraToSCF : Pass<"convert-ta-to-scf"> {
   let constructor = "comet::createLowerTensorAlgebraToSCFPass()";
   let dependentDialects = [
     "memref::MemRefDialect",
-    "scf::SCFDialect"
+    "scf::SCFDialect",
+    "index::IndexDialect"
+  ];
+}
+
+def SparseTensorConversionPass : Pass<"convert-sparse-tensor"> {
+  let summary = "Lowers operations on Tensor Algebra sparse tensors to mlir tensor operations";
+  let description = [{}];
+  
+  let constructor = "comet::createSparseTensorConversionPass()";
+
+  let dependentDialects = [
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+    "index::IndexDialect",
+    "tensor::TensorDialect"
   ];
 }
 

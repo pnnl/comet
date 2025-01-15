@@ -30,36 +30,66 @@ include "mlir/Pass/PassBase.td"
 /// Kernel Fusion
 ///===----------------------------------------------------------------------===///
 
-def IndexTreeKernelFusion : Pass<"indextree-kernel-fusion"> {
-  let summary = "The redundancy-aware kernel fusion on index tree dialect for compound expressions";
-  let description = [{
+//def IndexTreeKernelFusion : Pass<"indextree-kernel-fusion"> {
+//  let summary = "The redundancy-aware kernel fusion on index tree dialect for compound expressions";
+//  let description = [{
 
-      }];
-  let constructor = "comet::createIndexTreeKernelFusionPass()";
-  let dependentDialects = [
-    "comet::IndexTreeDialect",
-    "memref::MemRefDialect",
-    "scf::SCFDialect"
-  ];
-}
+//      }];
+//  let constructor = "comet::createIndexTreeKernelFusionPass()";
+//  let dependentDialects = [
+//    "comet::IndexTreeDialect",
+//    "memref::MemRefDialect",
+//    "scf::SCFDialect"
+//  ];
+//}
 
 ///===----------------------------------------------------------------------===///
 /// Workspace Transformations
 ///===----------------------------------------------------------------------===///
 
-def IndexTreeWorkspaceTranformations: Pass<"indextree-workspace-transformations"> {
+def IndexTreeWorkspaceTranformations: Pass<"indextree-workspace-transformations", "func::FuncOp"> {
   let summary = "Compressed workspace transformation on IndexTree dialect"
                 "to produce sparse output";
-  let description = [{
-
-      }];
-  let constructor = "comet::createIndexTreeWorkspaceTransformationsPass(";
-  let dependentDialects = [
-    "comet::IndexTreeDialect",
-    "memref::MemRefDialect",
-    "scf::SCFDialect"
-  ];
+  let description = [{}];
+  let constructor = "comet::createIndexTreeWorkspaceTransformationsPass()";
+  let dependentDialects = ["comet::IndexTreeDialect"];
 }
 
+def IndexTreeDomainInference : Pass<"indextree-domain-inference", "func::FuncOp"> {
+    let summary = "Infer domain of index variables";
+    let description = [{
+        Propogate domain values from tensors, through compute operations to index variables.
+        Necessary for eventual lowering of index variables to for loops
+    }];
+
+    let constructor = "comet::createIndexTreeDomainInferencePass()";
+}
+
+def IndexTreeDomainConcretization : Pass<"indextree-domain-concretization", "func::FuncOp"> {
+    let summary = "Transform tensor domains into concrete descriptions of dense or sparse domains";
+    let description = [{
+        Transform tensor domains into concrete descriptions of dense or sparse domains
+    }];
+
+    let constructor = "comet::createIndexTreeDomainConcretizationPass()";
+}
+
+def IndexTreeSymbolicComputePass : Pass<"indextree-symbolic-compute", "func::FuncOp"> {
+    let summary = "Create index-tree for symbolic computations for sparse output";
+    let description = [{
+        Inserting values into a sparse output tensor cannot be done in parallel because it requires
+        sequential access to the row pointers and dynamic allocation. The symbolic pass
+        computes the size of allocations and row pointers without performing the computations
+        so the sparse tensors can be allocated and the computations can be done in parallel.
+    }];
+
+    let constructor = "comet::createIndexTreeSymbolicComputePass()";
+}
+
+def IndexTreeInliningPass : Pass <"indextree-inlining", "func::FuncOp"> {
+    let summary = "Inline index tree";
+    let description = [{}];
+    let constructor = "comet::createIndexTreeInliningPass()";
+}
 
 #endif /// COMET_DIALECT_INDEXTREE_PASSES

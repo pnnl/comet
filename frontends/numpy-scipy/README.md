@@ -43,10 +43,13 @@ More information about the COMET compiler can be found at:
     ```
 
 2) **Testing:**  Run the integration tests to make sure the installation was successfull
-    
+    * If not already installed, install pytest
     ```
-    cd integration_tests
-    python3 numpy_integration.py -v
+    pip install pytest
+    ```
+
+    ```
+    pytest
     ```
 
 # How to use cometpy in a program:

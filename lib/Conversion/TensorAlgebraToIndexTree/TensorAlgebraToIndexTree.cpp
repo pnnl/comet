@@ -44,7 +44,6 @@ using namespace mlir::tensorAlgebra;
 // *********** For debug purpose *********//
 // #define COMET_DEBUG_MODE
 #include "comet/Utils/debug.h"
-#undef COMET_DEBUG_MODE
 // *********** For debug purpose *********//
 
 using namespace mlir;
@@ -143,11 +142,10 @@ Value getRealLhs(Operation *op)
   return setOp.getOperand(1);
 }
 
-Value getRealRhs(Operation *op)
+Value getRealRhs(Value val)
 {
   /// this will return set_op for transpose, but messes up getUsers() or subsequent calls to it.
-  Operation *firstUser = op->getNextNode();
-  comet_pdump(firstUser);
+
   /// TODO(gkestor): need to find out why user set_op is not showing up in users of TransposeOp
   ///       from the for loop below. once resolved, remove getNextNode().
   /// Operation *firstUser;
@@ -156,518 +154,307 @@ Value getRealRhs(Operation *op)
   ///  firstUser = user;
   ///  break;
   //}
-
-  if (isa<tensorAlgebra::TransposeOp>(op))
+  if(Operation* op = val.getDefiningOp())
   {
-    if (isa<TensorSetOp>(firstUser))
+    Operation *firstUser = op->getNextNode();
+    comet_pdump(firstUser);
+
+    if (isa<tensorAlgebra::TransposeOp>(op))
     {
-      TensorSetOp setOp = cast<TensorSetOp>(firstUser);
-      return setOp.getOperand(1);
-    }
-    else
-    {
-      llvm::errs() << "ERROR: Transpose has no set_op after it!\n";
-    }
-  }
-  else
-  {
-    /// do nothing
-    return op->getResult(0);
-  }
-  return op->getResult(0);
-}
-
-void buildDefUseInfo(UnitExpression *e)
-{
-  auto lhs = e->getLHS();
-  lhs->setDefiningExpr(e);
-  for (auto operand : e->getOperands())
-  {
-    if (auto def = operand->getDefiningExpr())
-    {
-      def->addUser(e);
-    }
-  }
-}
-
-IndicesType getUnion(IndicesType indices1, IndicesType indices2)
-{
-  sort(indices1.begin(), indices1.end());
-  sort(indices2.begin(), indices2.end());
-
-  IndicesType allIndices(indices1.size() * 4);
-
-  IndicesType::iterator it = set_union(indices1.begin(), indices1.end(), indices2.begin(), indices2.end(), allIndices.begin());
-  allIndices.resize(it - allIndices.begin());
-  return allIndices;
-}
-
-IndicesType gpuIndices(IndicesType indices1, IndicesType indices2)
-{
-  sort(indices1.begin(), indices1.end());
-  sort(indices2.begin(), indices2.end());
-
-  IndicesType interIndices;
-  IndicesType unIndices;
-  IndicesType difIndices;
-  IndicesType allIndices;
-
-  std::set_intersection(indices1.begin(), indices1.end(), indices2.begin(), indices2.end(),  std::back_inserter(interIndices));
-  set_union(indices1.begin(), indices1.end(), indices2.begin(), indices2.end(), std::back_inserter(unIndices));
-  std::set_difference(unIndices.begin(), unIndices.end(), interIndices.begin(), interIndices.end(), std::back_inserter(difIndices));
-  allIndices = difIndices;
-  allIndices.insert(allIndices.end(), interIndices.begin(), interIndices.end());
-
-  // allIndices.resize(it - allIndices.begin());
-  return allIndices;  
-}
-
-void doTensorMultOp(TensorMultOp op, unique_ptr<Index_Tree> &tree, TargetDevice device = CPU)
-{
-  Value rhs1_tensor = getRealRhs(op.getRhs1().getDefiningOp());
-  Value rhs2_tensor = getRealRhs(op.getRhs2().getDefiningOp());
-  Value lhs_tensor = getRealLhs(op);
-  Value mask_tensor = op.getMask();
-  // rhs1_tensor.getDefiningOp
-
-  comet_debug() << "LowerTensorAlgebraToIndexTreePass: doTensorMultOp\n";
-  comet_debug() << "rhs1-tensor\n";
-  comet_vdump(rhs1_tensor);
-  comet_debug() << "rhs2-tensor\n";
-  comet_vdump(rhs2_tensor);
-  comet_debug() << "lhs-tensor\n";
-  comet_vdump(lhs_tensor);
-  comet_debug() << "mask-tensor\n";
-  comet_vdump(mask_tensor);
-
-  std::vector<mlir::Value> rhs1_labels = op.getRhs1IndexLabels();
-  std::vector<mlir::Value> rhs2_labels = op.getRhs2IndexLabels();
-  std::vector<mlir::Value> lhs_labels = op.getResultIndexLabels();
-
-  auto allPerms = getAllPerms(op.getIndexingMaps());
-  assert(allPerms.size() == 3);
-
-#ifdef COMET_DEBUG_MODE
-  comet_debug() << "\n";
-  llvm::errs() << "[";
-  for (auto &perm : allPerms)
-  {
-    llvm::errs() << "[";
-    for (auto &i : perm)
-    {
-      llvm::errs() << i << ",";
-    }
-    llvm::errs() << "],";
-  }
-  llvm::errs() << "]\n";
-  comet_debug() << "";
-// comet_debug() << allPerms;
-#endif
-
-  auto allFormats = getAllFormats(op.getFormatsAttr(), allPerms);
-  auto SemiringOp = op.getSemiringAttr();
-  auto MaskingTypeAttr = op.getMaskTypeAttr();
-
-  /// If the operation is one of the chosen operations, then record output indices as parallel interators.
-  bool is_chosen_operations = check_chosen_operations(allPerms, allFormats);
-
-  auto B = tree->getOrCreateTensor(rhs1_tensor, rhs1_labels, allFormats[0]);
-  auto C = tree->getOrCreateTensor(rhs2_tensor, rhs2_labels, allFormats[1]);
-  auto A = tree->getOrCreateTensor(lhs_tensor, lhs_labels, allFormats[2]);
-
-  Tensor *M;
-  std::unique_ptr<UnitExpression> e;
-  std::vector<mlir::Value> empty;
-  if (mask_tensor != nullptr) /// mask is an optional input
-  {
-    comet_debug() << "mask input provided by user\n";
-    M = tree->getOrCreateTensor(mask_tensor, empty, allFormats[2]); /// We don't need indexlabel info for the mask
-    e = make_unique<UnitExpression>(A, B, C, M, "*");
-  }
-  else
-  {
-    comet_debug() << "no mask input provided by user\n";
-    e = make_unique<UnitExpression>(A, B, C, "*");
-  }
-
-  e->setSemiring(SemiringOp.cast<mlir::StringAttr>().getValue());
-  e->setMaskType(MaskingTypeAttr.cast<mlir::StringAttr>().getValue());
-
-  e->setOperation(op);
-  buildDefUseInfo(e.get());
-
-  auto inputDomains = e->computeInputIterDomains();
-  auto outputDomains = e->computeOutputIterDomains();
-
-  IndicesType rhs1_indices = tree->getIndices(rhs1_labels);
-  IndicesType rhs2_indices = tree->getIndices(rhs2_labels);
-  IndicesType allIndices;
-
-  switch (device) 
-  {
-    case mlir::tensorAlgebra::CPU:
-    {
-      allIndices = getUnion(rhs1_indices, rhs2_indices);
-    }
-    break;
-    case mlir::tensorAlgebra::GPU:
-    {
-      allIndices = gpuIndices(rhs1_indices, rhs2_indices);
-    }
-    break;
-  }
-  // tree->setSizeOfIteratorTypes(allIndices.size()); // Set the total number of iterators
-
-  auto lhsIndices = A->getIndices();
-
-  TreeNode *parent = tree->getRoot();
-  for (unsigned long i = 0; i < allIndices.size(); ++i)
-  {
-    int index = allIndices[i];
-    auto &idomain = inputDomains.at(index);
-
-    auto node = tree->addIndexNode(index, parent, idomain);
-
-    /// If this index appears on the lhs too, set output domain for the index node
-    /// and also set the index as a parallel iterator
-    unique_ptr<IteratorType> iteratorType(new IteratorType);
-    comet_debug() << iteratorType->dump() << "\n";
-    if (std::find(lhsIndices.begin(), lhsIndices.end(), index) != lhsIndices.end())
-    {
-      auto &odomain = outputDomains.at(index);
-      node->setOutputDomain(odomain);
-      if (is_chosen_operations)
+      if (isa<TensorSetOp>(firstUser))
       {
-        /// If the operation is one of the chosen ones, and the index appears on the lhs,
-        /// then the index has "parallel" as its iterator type.
-        iteratorType->setType("parallel");
+        TensorSetOp setOp = cast<TensorSetOp>(firstUser);
+        return setOp.getOperand(1);
       }
+      else
+      {
+        llvm::errs() << "ERROR: Transpose has no set_op after it!\n";
+      }
+      
     }
-    comet_debug() << "index " << index << "\n";
-    /// Set the iterator type of the node
-    tree->setIteratorTypeByIndex(index, std::move(iteratorType));
-    node->setIteratorType(tree->getIteratorTypeByIndex(index));
-    comet_debug() << "tree: " << tree->getIteratorTypeByIndex(index)->dump() << " ptr: " << tree->getIteratorTypeByIndex(index) <<  "\n";
-    comet_debug() << "node: " << node->getIteratorType()->dump() << " ptr: " << node->getIteratorType() << "\n";
-
-    parent = node;
   }
 
-  tree->addComputeNode(std::move(e), parent);
+  return val;
 }
 
-template <typename T>
-void doElementWiseOp(T op, unique_ptr<Index_Tree> &tree)
-{
-  std::vector<mlir::Value> rhs1_labels = op.getRhs1IndexLabels();
-  std::vector<mlir::Value> rhs2_labels = op.getRhs2IndexLabels();
-  std::vector<mlir::Value> lhs_labels = op.getResultIndexLabels();
+// void buildDefUseInfo(UnitExpression *e)
+// {
+//   auto lhs = e->getLHS();
+//   lhs->setDefiningExpr(e);
+//   for (auto operand : e->getOperands())
+//   {
+//     if (auto def = operand->getDefiningExpr())
+//     {
+//       def->addUser(e);
+//     }
+//   }
+// }
 
-  Value rhs1_tensor = getRealRhs(op.getRhs1().getDefiningOp());
-  Value rhs2_tensor = getRealRhs(op.getRhs2().getDefiningOp());
+// IndicesType getUnion(IndicesType indices1, IndicesType indices2)
+// {
+//   sort(indices1.begin(), indices1.end());
+//   sort(indices2.begin(), indices2.end());
+
+//   IndicesType allIndices(indices1.size() * 4);
+
+//   IndicesType::iterator it = set_union(indices1.begin(), indices1.end(), indices2.begin(), indices2.end(), allIndices.begin());
+//   allIndices.resize(it - allIndices.begin());
+//   return allIndices;
+// }
+
+// IndicesType gpuIndices(IndicesType indices1, IndicesType indices2)
+// {
+//   sort(indices1.begin(), indices1.end());
+//   sort(indices2.begin(), indices2.end());
+
+//   IndicesType interIndices;
+//   IndicesType unIndices;
+//   IndicesType difIndices;
+//   IndicesType allIndices;
+
+//   std::set_intersection(indices1.begin(), indices1.end(), indices2.begin(), indices2.end(),  std::back_inserter(interIndices));
+//   set_union(indices1.begin(), indices1.end(), indices2.begin(), indices2.end(), std::back_inserter(unIndices));
+//   std::set_difference(unIndices.begin(), unIndices.end(), interIndices.begin(), interIndices.end(), std::back_inserter(difIndices));
+//   allIndices = difIndices;
+//   allIndices.insert(allIndices.end(), interIndices.begin(), interIndices.end());
+
+//   // allIndices.resize(it - allIndices.begin());
+//   return allIndices;  
+// }
+
+
+template<class TATensorOp>
+mlir::LogicalResult generalIndexOperationRewrite(
+    mlir::Operation* op, 
+    ArrayRef<mlir::Value> operands,
+    mlir::ConversionPatternRewriter &rewriter,
+    bool compute_missing = false) {
+
+  auto loc = op->getLoc();
+  auto context = rewriter.getContext();
+  TATensorOp mult_op = llvm::dyn_cast<TATensorOp>(op);
+
+  Value rhs1_tensor = getRealRhs(mult_op.getRhs1());
+  Value rhs2_tensor = getRealRhs(mult_op.getRhs2());
   Value lhs_tensor = getRealLhs(op);
 
-  comet_debug() << "LowerTensorAlgebraToIndexTreePass: doElementWiseMultOp\n";
-  comet_debug() << "rhs1-tensor\n";
-  comet_vdump(rhs1_tensor);
-  comet_debug() << "rhs2-tensor\n";
-  comet_vdump(rhs2_tensor);
-  comet_debug() << "lhs-tensor\n";
-  comet_vdump(lhs_tensor);
-
-  auto allPerms = getAllPerms(op.getIndexingMaps());
-  auto allFormats = getAllFormats(op.getFormatsAttr(), allPerms);
-  auto SemiringOp = op.getSemiringAttr();
-  auto maskAttr = "none";
-
-  assert(allPerms.size() == 3);
-
-  auto B = tree->getOrCreateTensor(rhs1_tensor, rhs1_labels, allFormats[0]);
-  auto C = tree->getOrCreateTensor(rhs2_tensor, rhs2_labels, allFormats[1]);
-  auto A = tree->getOrCreateTensor(lhs_tensor, lhs_labels, allFormats[2]);
-
-  auto e = make_unique<UnitExpression>(A, B, C, "*");
-
-  e->setOperation(op);
-  e->setSemiring(SemiringOp.template cast<mlir::StringAttr>().getValue()); /// for element-wise multiplication
-  e->setMaskType(maskAttr);                                                /// for element-wise multiplication
-  buildDefUseInfo(e.get());
-
-  auto inputDomains = e->computeInputIterDomains();
-  auto outputDomains = e->computeOutputIterDomains();
-
-  /// RHS and LHS indices must be the same for elementwise multiplication
-  IndicesType allIndices = tree->getIndices(rhs1_labels);
-  // tree->setSizeOfIteratorTypes(allIndices.size()); // Set the total number of iterators
-
-  auto lhsIndices = A->getIndices();
-  TreeNode *parent = tree->getRoot();
-  for (unsigned long i = 0; i < allIndices.size(); i++)
-  {
-    int index = allIndices[i];
-    auto &idomain = inputDomains.at(index);
-
-    auto node = tree->addIndexNode(index, parent, idomain);
-    unique_ptr<IteratorType> iteratorType(new IteratorType);
-
-    /// If this index appears on the lhs too, set output domain for the index node
-    if (std::find(lhsIndices.begin(), lhsIndices.end(), index) != lhsIndices.end())
+  Value mask_tensor = nullptr;
+  if(llvm::isa<TensorMultOp>(op)){
+    mask_tensor = llvm::cast<TensorMultOp>(op).getMask();
+    if(mask_tensor && (mask_tensor == rhs1_tensor || mask_tensor == rhs2_tensor))
     {
-      auto &odomain = outputDomains.at(index);
-      node->setOutputDomain(odomain);
-      iteratorType->setType("parallel");
+      mask_tensor = rewriter.create<SpTensorAliasOp>(loc, mask_tensor.getType(), mask_tensor);
     }
-
-    /// Set iterator type. Currently "default" for all elementwise operations.
-    tree->setIteratorTypeByIndex(index, std::move(iteratorType));
-    node->setIteratorType(tree->getIteratorTypeByIndex(index));
-    comet_debug() << "tree: " << tree->getIteratorTypeByIndex(index)->dump() << " ptr: " << tree->getIteratorTypeByIndex(index) <<  "\n";
-    comet_debug() << "node: " << node->getIteratorType()->dump() << " ptr: " << node->getIteratorType() << "\n";
-    parent = node;
   }
-  tree->addComputeNode(std::move(e), parent);
-  /// cout << "print tree after tc\n";
-  /// tree->print();
+
+  auto indexing_maps = mult_op.getIndexingMaps();
+  auto semiring = mult_op.getSemiringAttr().template cast<mlir::StringAttr>().getValue();
+  auto MaskingTypeAttr = mult_op.getMaskTypeAttr();
+
+  auto tensor_type = op->getResultTypes()[0];
+  auto itree_op = rewriter.create<IndexTreeOp>(loc, tensor_type, lhs_tensor);
+  Region* body = &itree_op.getRegion();
+  loc = body->getLoc();
+  Block* block = rewriter.createBlock(body);
+
+  indexTree::IndexTreeType tree_type = indexTree::IndexTreeType::get(context);
+  Value parent = rewriter.create<indexTree::IndexTreeRootOp>(loc, tree_type);
+
+  //Construct each index variable
+  auto lhsMap = cast<AffineMapAttr>(indexing_maps[2]).getValue();
+  indexTree::IndexNodeType index_node_type = indexTree::IndexNodeType::get(context); 
+  std::vector<Value> index_nodes;
+  bool is_parallel = true; // Outer-most, non-reduction dimensions are parallel
+
+  // TODO: For now, we do not support outputting sparse tensors from a parallel loop.
+  if(llvm::isa<SparseTensorType>(tensor_type))
+  {
+    is_parallel = false;
+  }
+  
+  for (unsigned i = 0; i < lhsMap.getNumDims(); i++)
+  {
+    if(!lhsMap.isFunctionOfDim(i)){
+      is_parallel = false;
+    }
+    parent = rewriter.create<indexTree::IndexTreeIndicesOp>(loc, index_node_type, parent, nullptr, is_parallel);
+    index_nodes.push_back(parent);
+  }
+
+  //Construct LHS Operand
+  llvm::SmallVector<Value> pos;
+  llvm::SmallVector<Value> crds;
+  Value prev_dim = nullptr;
+  llvm::SmallVector<Value> mask_pos;
+  llvm::SmallVector<Value> mask_crds;
+  Value mask_prev_dim;
+  auto access_type = rewriter.getIndexType();
+  for (size_t i = 0; i < lhsMap.getNumResults(); i++)
+  {
+    auto expr = lhsMap.getResult(i);
+    IndexTreeIndexToTensorOp access_op = rewriter.create<IndexTreeIndexToTensorOp>(
+      loc,
+      TypeRange({access_type, access_type}),
+      lhs_tensor,
+      index_nodes[expr.template cast<AffineDimExpr>().getPosition()],
+      rewriter.getUI32IntegerAttr((unsigned)i),
+      prev_dim
+    );
+    pos.push_back(access_op.getPos());
+    crds.push_back(access_op.getCrd());
+    prev_dim = pos[pos.size() - 1];
+
+    if(mask_tensor != nullptr)
+    {
+      IndexTreeIndexToTensorOp access_op = rewriter.create<IndexTreeIndexToTensorOp>(
+        loc,
+        TypeRange({access_type, access_type}),
+        mask_tensor,
+        index_nodes[expr.template cast<AffineDimExpr>().getPosition()],
+        rewriter.getUI32IntegerAttr((unsigned)i),
+        mask_prev_dim
+      );
+      mask_pos.push_back(access_op.getPos());
+      mask_crds.push_back(access_op.getCrd());
+      mask_prev_dim = mask_pos[mask_pos.size() - 1];
+    }
+  }
+
+  indexTree::OperandType operand_type = indexTree::OperandType::get(context);
+  Value lhs_operand = rewriter.create<indexTree::IndexTreeLHSOperandOp>(loc, operand_type,
+                                                                        lhs_tensor, pos,
+                                                                        crds);
+  Value mask_operand = nullptr;
+  if(mask_tensor != nullptr)
+  {
+    mask_operand = rewriter.create<indexTree::IndexTreeOperandOp>(loc, operand_type,
+                                                                      mask_tensor, mask_pos,
+                                                                      mask_crds);
+  }
+
+  //Construct RHS operands
+  std::vector<Value> rhs_operands;
+  pos.clear();
+  crds.clear();
+  prev_dim = nullptr;
+  auto affineMap = indexing_maps[0].template cast<AffineMapAttr>().getValue();
+  for (size_t i = 0; i < affineMap.getNumResults(); i++)
+  {
+    auto expr = affineMap.getResult(i);
+    IndexTreeIndexToTensorOp access_op = rewriter.create<indexTree::IndexTreeIndexToTensorOp>(
+      loc,
+      TypeRange({access_type, access_type}),
+      rhs1_tensor,
+      index_nodes[expr.template cast<AffineDimExpr>().getPosition()],
+      rewriter.getUI32IntegerAttr((unsigned)i),
+      prev_dim
+    );
+    pos.push_back(access_op.getPos());
+    crds.push_back(access_op.getCrd());
+    prev_dim = pos[pos.size() - 1];
+  }
+  rhs_operands.push_back(rewriter.create<IndexTreeOperandOp>(
+                          loc, operand_type, rhs1_tensor, pos, crds));
+  
+  pos.clear();
+  crds.clear();
+  prev_dim = nullptr;
+  affineMap = indexing_maps[1].template cast<AffineMapAttr>().getValue();
+  for (size_t i = 0; i < affineMap.getNumResults(); i++)
+  {
+    auto expr = affineMap.getResult(i);
+    IndexTreeIndexToTensorOp access_op = rewriter.create<IndexTreeIndexToTensorOp>(
+      loc,
+      TypeRange({access_type, access_type}),
+      rhs2_tensor,
+      index_nodes[expr.template cast<AffineDimExpr>().getPosition()],
+      rewriter.getUI32IntegerAttr((unsigned)i),
+      prev_dim
+    );
+    pos.push_back(access_op.getPos());
+    crds.push_back(access_op.getCrd());
+    prev_dim = pos[pos.size() - 1];
+  }
+  rhs_operands.push_back(rewriter.create<indexTree::IndexTreeOperandOp>(
+                          loc, operand_type, rhs2_tensor, pos, crds));
+
+  Value compute_op = rewriter.create<indexTree::IndexTreeComputeOp>(
+      loc,
+      tensor_type,
+      parent,
+      lhs_operand,
+      rhs_operands,
+      mask_operand,
+      rewriter.getStringAttr(semiring),
+      rewriter.getBoolAttr(compute_missing)
+  );
+
+  rewriter.create<indexTree::YieldOp>(loc, TypeRange(), compute_op);
+  rewriter.replaceOp(op, itree_op->getResults());
+  return success();
 }
 
-/// helper for treeToDialect()
-Operation *getSetOpForTC(Operation *op)
-{
-  assert(isa<TensorMultOp>(op) || isa<TensorElewsMultOp>(op) || isa<TensorAddOp>(op) || isa<TensorSubtractOp>(op));
-  /// TODO(gkestor): fix the issue with getUsers() after getRealRhs().
-  comet_debug() << "The following loop may cause issue!\n";
-  Operation *firstUser = nullptr;
-  for (auto user : op->getResult(0).getUsers())
-  {
-    firstUser = user;
-    break;
+struct TensorMultOpLowering : public mlir::ConversionPattern {
+  TensorMultOpLowering(mlir::MLIRContext *ctx)
+      : mlir::ConversionPattern(TensorMultOp::getOperationName(), 1, ctx) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::Operation *op, ArrayRef<mlir::Value> operands,
+                  mlir::ConversionPatternRewriter &rewriter) const final {
+    return generalIndexOperationRewrite<TensorMultOp>(op, operands, rewriter);
   }
+};
 
-  assert(isa<TensorSetOp>(firstUser));
-  return firstUser;
-}
+struct TensorElewsMultOpLowering : public mlir::ConversionPattern {
+  TensorElewsMultOpLowering(mlir::MLIRContext *ctx)
+      : mlir::ConversionPattern(TensorElewsMultOp::getOperationName(), 1, ctx) {}
 
-/// helper for treeToDialect()
-IndexTreeComputeOp createComputeNodeOp(OpBuilder &builder, TreeNode *node, Location &loc)
-{
-  auto context = builder.getContext();
-  IntegerType i64Type = IntegerType::get(context, 64);
-  auto expr = node->getExpression();
-  SmallVector<Attribute, 8> allIndices_rhs;
-
-  for (auto t : expr->getOperands())
-  {
-    SmallVector<int64_t, 8> indices;
-    for (auto index : t->getIndices())
-    {
-      indices.push_back(index);
-    }
-    allIndices_rhs.push_back(builder.getI64ArrayAttr(indices));
+  mlir::LogicalResult
+  matchAndRewrite(mlir::Operation *op, ArrayRef<mlir::Value> operands,
+                  mlir::ConversionPatternRewriter &rewriter) const final {
+    return generalIndexOperationRewrite<TensorElewsMultOp>(op, operands, rewriter);
   }
+};
 
-  SmallVector<Attribute, 8> allIndices_lhs;
-  for (auto t : expr->getResults())
-  {
-    SmallVector<int64_t, 8> indices;
-    for (auto index : t->getIndices())
-    {
-      comet_debug() << index << " \n";
-      indices.push_back(index);
-    }
-    allIndices_lhs.push_back(builder.getI64ArrayAttr(indices));
+struct TensorAddOpLowering : public mlir::ConversionPattern {
+  TensorAddOpLowering(mlir::MLIRContext *ctx)
+      : mlir::ConversionPattern(TensorAddOp::getOperationName(), 1, ctx) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::Operation *op, ArrayRef<mlir::Value> operands,
+                  mlir::ConversionPatternRewriter &rewriter) const final {
+    return generalIndexOperationRewrite<TensorAddOp>(op, operands, rewriter, true);
   }
+};
 
-  SmallVector<Attribute, 8> allFormats_rhs;
-  for (auto t : expr->getOperands())
-  {
-    SmallVector<StringRef, 8> formats;
-    for (auto &f : t->getFormats())
-    {
-      formats.push_back(f);
-    }
-    allFormats_rhs.push_back(builder.getStrArrayAttr(formats));
+struct TensorSubtractOpLowering : public mlir::ConversionPattern {
+  TensorSubtractOpLowering(mlir::MLIRContext *ctx)
+      : mlir::ConversionPattern(TensorSubtractOp::getOperationName(), 1, ctx) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::Operation *op, ArrayRef<mlir::Value> operands,
+                  mlir::ConversionPatternRewriter &rewriter) const final {
+    return generalIndexOperationRewrite<TensorSubtractOp>(op, operands, rewriter, true);
   }
-
-  SmallVector<Attribute, 8> allFormats_lhs;
-  for (auto t : expr->getResults())
-  {
-    SmallVector<StringRef, 8> formats;
-    for (auto &f : t->getFormats())
-    {
-      formats.push_back(f);
-    }
-    allFormats_lhs.push_back(builder.getStrArrayAttr(formats));
-  }
-
-  std::vector<Value> t_rhs;
-  Value t_lhs = expr->getLHS()->getValue();
-  for (auto o : expr->getOperands())
-  {
-    t_rhs.push_back(o->getValue());
-  }
-
-  /// check if mask exists and add to t_rhs
-  if (expr->getMask() != nullptr)
-  {
-    comet_debug() << "user has provided mask input\n";
-    t_rhs.push_back(expr->getMask()->getValue()); /// add mask to IndexTreeComputeRHSOp
-  }
-
-  Value leafop_rhs = builder.create<indexTree::IndexTreeComputeRHSOp>(loc,
-                                                                      mlir::UnrankedTensorType::get(builder.getF64Type()), t_rhs,
-                                                                      builder.getArrayAttr(allIndices_rhs),
-                                                                      builder.getArrayAttr(allFormats_rhs));
-  comet_vdump(leafop_rhs);
-  Value leafop_lhs = builder.create<indexTree::IndexTreeComputeLHSOp>(loc,
-                                                                      mlir::UnrankedTensorType::get(builder.getF64Type()), t_lhs,
-                                                                      builder.getArrayAttr(allIndices_lhs),
-                                                                      builder.getArrayAttr(allFormats_lhs));
-  comet_vdump(leafop_lhs);
-
-  bool comp_worksp_opt = false; /// non-compressed workspace, this is a place-holder and it is updated in workspace transform pass.
-  llvm::StringRef semiring = expr->getSemiring();
-  llvm::StringRef maskType = expr->getMaskType();
-  auto leafop = builder.create<IndexTreeComputeOp>(loc, i64Type, leafop_rhs, leafop_lhs, builder.getBoolAttr(comp_worksp_opt), builder.getStringAttr(semiring), builder.getStringAttr(maskType));
-
-  comet_pdump(leafop);
-  return leafop;
-}
-
-/**
- * This function performs the actual removal of the ta operations in the tree,
- * and add corresponding ta.itree operations.›
- * @param tree
- */
-void treeToDialect(Index_Tree *tree)
-{
-  vector<mlir::Operation *> TAOps = tree->getContainingTAOps();
-  unsigned int TAOpsID = 0;
-  OpBuilder builder(TAOps[TAOpsID]);
-  auto loc = TAOps[TAOpsID]->getLoc();
-  auto context = builder.getContext();
-
-  std::map<TreeNode *, Value> nodeToOp;
-
-  IntegerType i64Type = IntegerType::get(context, 64);
-
-  for (auto &node : tree->getNodesInReverseTopoOrder())
-  {
-    if (node->isComputeNode())
-    {
-      assert(nodeToOp.count(node) == 0);
-      builder.setInsertionPoint(TAOps[TAOpsID]);
-      nodeToOp[node] = createComputeNodeOp(builder, node, loc);
-      TAOpsID++;
-    }
-    else if (node->isRealIndexNode())
-    {
-      if (node->getChildren().empty())
-      {
-        continue; /// to skip nodes that become childless after fusion
-      }
-      SmallVector<Value, 8> children;
-      for (auto c : node->getChildren())
-      {
-        assert(nodeToOp.count(c) > 0);
-        children.push_back(nodeToOp[c]);
-      }
-      /// assert(!children.empty());
-      SmallVector<int64_t, 1> indices;
-      indices.push_back(node->getIndex());
-      auto indicesAttr = builder.getI64ArrayAttr(indices);
-
-      SmallVector<int64_t, 1> ids;
-      ids.push_back(node->getId());
-
-      /// new attribute iterator_type
-      auto dumb_iterator_type = builder.getStringAttr(node->getIteratorType()->getType());
-      Value indexNodeOp = builder.create<indexTree::IndexTreeIndicesOp>(loc,
-                                                                        i64Type,
-                                                                        children,
-                                                                        indicesAttr,
-                                                                        dumb_iterator_type);
-
-      nodeToOp[node] = indexNodeOp;
-
-      if (node->getParent() != nullptr && node->getParent()->isFillerIndexNode())
-      {
-#ifdef DEBUG_MODE_LowerTensorAlgebraToIndexTreePass
-        Value op = builder.create<indexTree::IndexTreeOp>(loc, i64Type, indexNodeOp);
-        comet_vdump(op);
-#else
-        builder.create<indexTree::IndexTreeOp>(loc, i64Type, indexNodeOp);
-#endif
-      }
-    }
-  }
-
-  for (auto op : tree->getContainingTAOps())
-  {
-    auto setOp = getSetOpForTC(op);
-    setOp->erase();
-    op->erase();
-  }
-}
+};
 
 void LowerTensorAlgebraToIndexTreePass::runOnOperation()
 {
-  unique_ptr<Index_Tree> tree;
-  func::FuncOp func = getOperation();
-  // #ifdef COMET_DEBUG_MODE
-  //   comet_debug() << "Before LowerTensorAlgebraToIndexTreePass\n";
-  //   func.dump();
-  // #endif
+  mlir::ConversionTarget target(getContext());
 
-  tree = Index_Tree::createTreeWithRoot();
-  bool formIndexTreeDialect = false;
+  target.addLegalDialect<indexTree::IndexTreeDialect>();
+  target.addLegalOp<tensorAlgebra::SpTensorAliasOp>();
+  target.addIllegalOp<tensorAlgebra::TensorMultOp, tensorAlgebra::TensorElewsMultOp,
+                      tensorAlgebra::TensorAddOp, tensorAlgebra::TensorSubtractOp>();
+  
+  mlir::RewritePatternSet patterns(&getContext());
+  patterns.add<TensorMultOpLowering, 
+               TensorElewsMultOpLowering,
+               TensorAddOpLowering,
+               TensorSubtractOpLowering>(&getContext());
 
-  comet_debug() << "IndexTree pass running on Function\n";
-  for (Block &B : func.getBody())
-  {
-    for (Operation &op : B)
-    {
-      if (isa<TensorMultOp>(&op))
-      {
-        doTensorMultOp(cast<TensorMultOp>(&op), tree, device);
-        formIndexTreeDialect = true;
-      }
-      else if (isa<TensorElewsMultOp>(&op))
-      {
-#ifdef COMET_DEBUG_MODE
-        comet_debug() << "\n !!! doElementWiseOp<TensorElewsMultOp>\n";
-#endif
-        doElementWiseOp<TensorElewsMultOp>(cast<TensorElewsMultOp>(&op), tree);
-        formIndexTreeDialect = true;
-      }
-      else if (isa<TensorAddOp>(&op) || isa<TensorSubtractOp>(&op))
-      {
-        /// elementwise addition and subtraction
-        if (isa<TensorAddOp>(&op))
-        {
-#ifdef COMET_DEBUG_MODE
-          comet_debug() << "\n !!! doElementWiseOp<TensorAddOp>\n";
-#endif
-          doElementWiseOp<TensorAddOp>(cast<TensorAddOp>(&op), tree);
-        }
-
-        if (isa<TensorSubtractOp>(&op))
-        {
-#ifdef COMET_DEBUG_MODE
-          comet_debug() << "\n !!! doElementWiseOp<TensorSubtractOp>\n";
-#endif
-          doElementWiseOp<TensorSubtractOp>(cast<TensorSubtractOp>(&op), tree);
-        }
-        formIndexTreeDialect = true;
-      }
-    }
-  }
-
-  if (formIndexTreeDialect)
-  {
-    comet_debug() << " Dumping Index tree IR\n";
-    /// only do this for TensorMultOp or TensorElewsMultOp
-    treeToDialect(tree.get());
-  }
+  if (mlir::failed(mlir::applyPartialConversion(getOperation(), target, std::move(patterns))))
+    signalPassFailure();
 }
 
 /// create all the passes.

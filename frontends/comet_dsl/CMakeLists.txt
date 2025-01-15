@@ -22,15 +22,15 @@ get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
 llvm_update_compile_flags(comet-opt)
 
 set(LIBS
-MLIRAnalysis
-MLIRIR
-MLIRParser
-MLIRPass
-MLIRTransforms
-COMETUtils
-COMETTensorAlgebraDialect
-COMETIndexTreeDialect
-COMETIndexTreeToSCF
+  MLIRAnalysis
+  MLIRIR
+  MLIRParser
+  MLIRPass
+  MLIRTransforms
+  COMETUtils
+  COMETTensorAlgebraDialect
+  COMETIndexTreeDialect
+  # COMETIndexTreeToSCF
 )
 
 if(ENABLE_GPU_TARGET)

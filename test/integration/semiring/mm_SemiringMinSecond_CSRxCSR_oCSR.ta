@@ -1,0 +1,38 @@
+# Sparse matrix sparse matrix min-second semiring operation.
+# Sparse matrix is in CSR format. Currently workspace transformation on the IndexTree dialect works for only CSR format
+# RUN: comet-opt --opt-comp-workspace --convert-ta-to-it --convert-to-loops --convert-to-llvm %s &> mm_SemiringMinSecond_CSRxCSR_oCSR.llvm
+# RUN: export SPARSE_FILE_NAME0=%comet_integration_test_data_dir/test_rank2.mtx
+# RUN: export SPARSE_FILE_NAME1=%comet_integration_test_data_dir/test_rank2.mtx
+# RUN: mlir-cpu-runner mm_SemiringMinSecond_CSRxCSR_oCSR.llvm -O3 -e main -entry-point-result=void -shared-libs=%comet_utility_library_dir/libcomet_runner_utils%shlibext | FileCheck %s
+
+def main() {
+    #IndexLabel Declarations
+    IndexLabel [a] = [?];
+    IndexLabel [b] = [?];
+    IndexLabel [c] = [?];
+    
+    #Tensor Declarations
+    Tensor<double> A([a, b], {CSR});	 
+    Tensor<double> B([b, c], {CSR});
+    Tensor<double> C([a, c], {CSR});
+    
+    #Tensor Readfile Operation
+    A[a, b] = comet_read(0);
+    B[b, c] = comet_read(1);
+    
+    #Tensor Contraction
+    C[a, c] = A[a, b] @(min,second) B[b, c];
+    print(C);
+}
+
+# Print the result for verification.
+# CHECK: data = 
+# CHECK-NEXT: 5,
+# CHECK-NEXT: data = 
+# CHECK-NEXT: -1,
+# CHECK-NEXT: data = 
+# CHECK-NEXT: 0,2,4,5,7,9,
+# CHECK-NEXT: data = 
+# CHECK-NEXT: 0,3,1,4,2,0,3,1,4,
+# CHECK-NEXT: data = 
+# CHECK-NEXT: 1,1.4,2,2.5,3,1,1.4,2,2.5,

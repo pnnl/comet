@@ -28,6 +28,7 @@
 #ifndef TENSORALGEBRA_DIALECT_H_
 #define TENSORALGEBRA_DIALECT_H_
 
+
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -40,6 +41,18 @@
 /// dialect.
 #include "comet/Dialect/TensorAlgebra/IR/TADialect.h.inc"
 
+/// Include the auto-generated enum declerations
+//===---------------------------------------------------------------------===//
+#include "comet/Dialect/TensorAlgebra/IR/TAEnums.h.inc"
+
+#define GET_TYPEDEF_CLASSES
+#include "comet/Dialect/TensorAlgebra/IR/TATypes.h.inc"
+
+/// Include the auto-generated header file containing the declaration of the index tree
+/// types.
+#define GET_ATTRDEF_CLASSES
+#include "comet/Dialect/TensorAlgebra/IR/TAAttrs.h.inc"
+
 /// Include the auto-generated header file containing the declarations of the
 /// tensorAlgbra operations and also the operations of the Shape Inference Op Interface.
 //===----------------------------------------------------------------------===//
@@ -50,13 +63,6 @@ namespace mlir
 {
   namespace tensorAlgebra
   {
-    std::vector<Value> getFormatsValue(std::string formats_str, int rank_size, PatternRewriter &rewriter, Location loc, IndexType indexType);
-
-    namespace detail
-    {
-      struct SparseTensorTypeStorage;
-    } /// end namespace detail
-
     void populateMultiOpFactorizationPatterns(
         RewritePatternSet &patterns, MLIRContext *context);
 
@@ -67,55 +73,7 @@ namespace mlir
         RewritePatternSet &patterns, MLIRContext *context);
 
     void populateSTCRemoveDeadOpsPatterns(
-        RewritePatternSet &patterns, MLIRContext *context);
-
-    //===----------------------------------------------------------------------===//
-    /// Tensor Algebra Types
-    //===----------------------------------------------------------------------===//
-
-    class IndexLabelType : public mlir::Type::TypeBase<IndexLabelType, mlir::Type, TypeStorage>
-    {
-    public:
-      /// Used for generic hooks in TypeBase.
-      using Base::Base;
-
-      static IndexLabelType get(MLIRContext *context)
-      {
-        /// Custom, uniq'ed construction in the MLIRContext.
-        return Base::get(context);
-      }
-
-      /// The name of this struct type.
-      static constexpr StringLiteral name = "ta.indexLabel";
-    };
-
-    /// This class defines the TA sparse tensor type. It represents a collection of
-    /// element types for data and indices of COO format.
-    /// All derived types in MLIR must inherit from the CRTP class
-    /// 'Type::TypeBase'. It takes as template parameters the concrete type
-    /// (SparseTensorType), the base class to use (Type), and the storage class
-    /// (SparseTensorTypeStorage).
-    class SparseTensorType : public mlir::Type::TypeBase<SparseTensorType, mlir::Type,
-                                                         detail::SparseTensorTypeStorage>
-    {
-    public:
-      /// Inherit some necessary constructors from 'TypeBase'.
-      using Base::Base;
-
-      /// Create an instance of a `SparseTensorType` with the given element types. There
-      /// *must* be atleast one element type.
-      static SparseTensorType get(llvm::ArrayRef<mlir::Type> elementTypes);
-
-      /// Returns the element types of this sparse tensor type.
-      llvm::ArrayRef<mlir::Type> getElementTypes();
-
-      /// Returns the number of element type held by this sparse tensor.
-      size_t getNumElementTypes() { return getElementTypes().size(); }
-
-      /// The name of this struct type.
-      static constexpr StringLiteral name = "ta.spTensor";
-    };
-
+        RewritePatternSet &patterns, MLIRContext *context);    
   } /// end namespace tensorAlgebra
 } /// end namespace mlir
 

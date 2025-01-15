@@ -8,10 +8,10 @@ def run_comet(A,B):
 
     return C
 
+def test_mv_SemiringPlusTimes_DensexDense_oDense():
+    A = np.full((8,16), 2.3)
+    B = np.full((16), 3.7)
 
-A = np.full((8,16), 2.3)
-B = np.full((16), 3.7)
-
-res = run_comet(A,B)
-expected = np.array([136.16,136.16,136.16,136.16,136.16,136.16,136.16,136.16]).reshape((8))
-np.testing.assert_almost_equal(res, expected)
+    res = run_comet(A,B)
+    expected = np.array([136.16,136.16,136.16,136.16,136.16,136.16,136.16,136.16]).reshape((8))
+    np.testing.assert_almost_equal(res, expected)

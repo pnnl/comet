@@ -64,8 +64,7 @@ template <typename t>
 bool isNeedTensorDecl(t op)
 {
   bool isUsedInSetSource = true;
-  std::string op_str = dump2str(op);
-  mlir::Value result = op.getOperation()->getResult(0);
+  mlir::Value result = op->getResult(0);
   comet_debug() << " ";
   comet_vdump(result);
   for (auto u1 : result.getUsers())
@@ -75,20 +74,10 @@ bool isNeedTensorDecl(t op)
     /// If not used as source tensor of set_op, it is tmp result
     if (isa<tensorAlgebra::TensorSetOp>(u1))
     {
-      comet_debug() << " used in ta.set_new op\n";
       auto p = cast<tensorAlgebra::TensorSetOp>(u1).getOperation();
-      for (unsigned int i = 0; i < p->getNumOperands(); i++)
+      if(result == p->getOperand(0))
       {
-        comet_debug() << " the " << i << "th operand\n";
-        std::string n_str = dump2str(p->getOperand(i));
-        if (n_str.compare(0, op_str.size(), op_str) == 0)
-        {
-          comet_debug() << " FIND IT: " << i << "\n";
-          if (i == 0)
-          { /// used as source tensor
-            isUsedInSetSource = false;
-          }
-        }
+        isUsedInSetSource = false;
       }
     }
   }

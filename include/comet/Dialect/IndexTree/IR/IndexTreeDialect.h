@@ -30,10 +30,24 @@
 
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "llvm/ADT/StringSet.h"
+#include "comet/Dialect/TensorAlgebra/IR/TADialect.h"
 
 /// Include the auto-generated header file containing the declaration of the index tree
 /// dialect.
 #include "comet/Dialect/IndexTree/IR/IndexTreeDialect.h.inc"
+
+/// Include the auto-generated header file containing the declaration of the index tree
+/// types.
+#define GET_TYPEDEF_CLASSES
+#include "comet/Dialect/IndexTree/IR/IndexTreeTypes.h.inc"
+
+// Include the trait definitions
+#include "comet/Dialect/IndexTree/IR/IndexTreeTraits.h"
+
+// Include the op interface definitions
+#include "comet/Dialect/IndexTree/IR/IndexTreeOpInterfaces.h.inc"
 
 /// Include the auto-generated header file containing the declarations of the
 /// Index Tree operations and also the operations of the Shape Inference Op Interface.

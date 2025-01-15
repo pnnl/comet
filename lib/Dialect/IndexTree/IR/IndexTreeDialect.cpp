@@ -25,13 +25,17 @@
 //
 //===----------------------------------------------------------------------===//
 #include <iostream>
-#include "comet/Dialect/IndexTree/IR/IndexTreeDialect.h"
-
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/SCF/IR/DeviceMappingInterface.h"
+#include "llvm/ADT/TypeSwitch.h"
+
+#include "comet/Dialect/IndexTree/IR/IndexTreeDialect.h"
+#include "comet/Dialect/TensorAlgebra/IR/TADialect.h"
 
 using namespace mlir;
 using namespace mlir::indexTree;
+using namespace mlir::tensorAlgebra;
 
 //===----------------------------------------------------------------------===//
 // IndexTreeDialect
@@ -39,26 +43,16 @@ using namespace mlir::indexTree;
 
 #include "comet/Dialect/IndexTree/IR/IndexTreeDialect.cpp.inc"
 
-Type mlir::indexTree::IndexTreeDialect::parseType(DialectAsmParser &parser) const
-{
-  /// Parse the main keyword for the type.
-  StringRef keyword;
-  /// for "range" and "sptensor" type
-  if (parser.parseKeyword(&keyword))
-    return Type();
+//===----------------------------------------------------------------------===//
+// Tablegen Type Definitions
+//===----------------------------------------------------------------------===//
 
-  parser.emitError(parser.getNameLoc(),
-                   "unknown IndexTree type: " + keyword);
-  return Type();
-}
+#define GET_TYPEDEF_CLASSES
+#include "comet/Dialect/IndexTree/IR/IndexTreeTypes.cpp.inc"
 
-/// Print an instance of a type registered to the index tree dialect.
-/// No type definition yet
-void mlir::indexTree::IndexTreeDialect::printType(mlir::Type type,
-                                                  mlir::DialectAsmPrinter &printer) const
-{
-  return;
-}
+// Include the op interface definitions
+#include "comet/Dialect/IndexTree/IR/IndexTreeOpInterfaces.cpp.inc"
+
 
 #define GET_OP_CLASSES
 #include "comet/Dialect/IndexTree/IR/IndexTreeOps.cpp.inc"
@@ -67,8 +61,16 @@ void mlir::indexTree::IndexTreeDialect::printType(mlir::Type type,
 /// the point of registration of types and operations for the dialect.
 void IndexTreeDialect::initialize()
 {
+  addTypes<
+#define GET_TYPEDEF_LIST
+#include "comet/Dialect/IndexTree/IR/IndexTreeTypes.cpp.inc"
+      >();
+
   addOperations<
 #define GET_OP_LIST
 #include "comet/Dialect/IndexTree/IR/IndexTreeOps.cpp.inc"
       >();
 }
+
+using namespace mlir;
+using namespace mlir::indexTree;

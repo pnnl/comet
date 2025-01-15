@@ -8,10 +8,10 @@ def run_comet(A,B):
 
     return C
 
+def test_mv_SemiringPlusTimes_DensexCSR_oDense(data_rank2_path):
+    B = sp.sparse.csr_array(sp.io.mmread(data_rank2_path))
+    A = np.full((B.shape[0]), 1.7)
 
-B = sp.sparse.csr_array(sp.io.mmread("../../../../integration_test/data/test_rank2.mtx"))
-A = np.full((B.shape[0]), 1.7)
-
-res = run_comet(A,B)
-expected = np.array([8.67,12.24,5.1,9.18,12.75]).reshape((B.shape[1]))
-np.testing.assert_almost_equal(res, expected)
+    res = run_comet(A,B)
+    expected = np.array([8.67,12.24,5.1,9.18,12.75]).reshape((B.shape[1]))
+    np.testing.assert_almost_equal(res, expected)

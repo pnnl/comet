@@ -8,6 +8,22 @@ from ast import operator
 from cometpy.MLIRGen import types_mlir
 from cometpy.MLIRGen.types import *
 
+def get_tensor_type(datatype, shape, format, indices_type):
+    if format != DENSE:
+        tensor_formats = []
+        if format == CSR:
+            tensor_formats.append("d")
+            tensor_formats.append("unk")
+            tensor_formats.append("cu")
+            tensor_formats.append("unk")
+        elif format == COO:
+            tensor_formats.append("cn")
+            tensor_formats.append("unk")
+            tensor_formats.append("s")
+            tensor_formats.append("unk")
+        return "!ta.sparse_tensor<{}, {}, {}, {}>".format(datatype, indices_type,"x".join(str(v) for v in shape), ",".join(f for f in tensor_formats))
+    else:
+        return "tensor<{}x{}>".format("x".join(str(v) for v in shape), datatype)
 
 class Dialect:
     def __init__(self, name):
@@ -28,7 +44,7 @@ class MLIRFunctionBuilder:
     )
     function_wrapper_text = jinja2.Template(
         ("" * default_indentation_size)
-        + "func.func {% if private_func %}private {% endif %}@{{func_name}}({{signature}}) -> {{return_type}} {"
+        + "func.func {% if private_func %}private {% endif %}@{{func_name}}({{signature}})  -> {{return_type}} {% if return_type %} attributes {llvm.emit_c_interface} {% endif %}{"
         + "\n"
         + "{{statements}}"
         + "\n"
@@ -41,7 +57,7 @@ class MLIRFunctionBuilder:
         self,
         func_name: str,
         input_types,
-        return_types: Sequence[Union[str, types_mlir.Type]],
+        return_types, #Sequence[Union[str, types_mlir.Type]],
         aliases: types_mlir.AliasMap = None,
     ) -> None:
         # TODO mlir functions can return zero or more results https://mlir.llvm.org/docs/LangRef/#operations
@@ -59,7 +75,7 @@ class MLIRFunctionBuilder:
         #     iv = MLIRVar(f"arg{i}", it)
         #     iv._initialized = True
         #     inputs.append(iv)
-        return_types = [types_mlir.Type.find(rt, aliases) for rt in return_types]
+        # return_types = [types_mlir.Type.find(rt, aliases) for rt in return_types]
 
         self.func_name = func_name
         self.inputs = input_types
@@ -127,7 +143,7 @@ class MLIRFunctionBuilder:
         return_type = ", ".join(str(rt) for rt in self.return_types)
         if len(self.return_types) != 1:
             return_type = f"({return_type})"
-        signature = ", ".join(f"{ var[0].replace('%','%arg_')}: {var[1].replace('tensor', 'memref')}" if 'tensor' in var[1] else  f"{ var[0].replace('%', '%arg_') }: memref<1xf64>" if var[1] =="f64" else f"{ var[0]}: {var[1]}" for var in self.inputs)
+        signature = ", ".join(f"{ var[0]}: {var[1]}" if 'tensor' in var[1] else  f"{ var[0].replac }: tensor<1xf64>" if var[1] =="f64" else f"{ var[0]}: {var[1]}" for var in self.inputs)
 
         return needed_function_definitions + self.function_wrapper_text.render(
             private_func=make_private,
@@ -193,12 +209,13 @@ class TensorSumBuilder:
 
     def __init__(self, data): # lhs, operators, tensors_shapes, label_map):
         self.lhs = data["out_id"]
-        self.input_type = "tensor<{}xf64>".format("x".join(str(v) for v in data["shapes"][0]))
+        self.input_type = get_tensor_type(data['value_type'], data["shapes"][0],  data["formats"][0], data['indices_type'][0])
+        self.output_type = data['value_type']
 
         self.operators = "({})".format(",".join("%t"+str(v) for v in data["operands"]))
 
     def build_op(self):
-        output_type = "f64"
+        output_type =  self.output_type
         
         return self.tensor_sum_wrapper_text.render(
             lhs = self.lhs,
@@ -220,15 +237,15 @@ class SetOp_Builder:
     def __init__(self, data):# in_tensor, target, tensors_shapes, label_map, beta) :
         self.target = data["lhs"]
         self.in_tensor = data["rhs"]
+        self.formats = data["formats"]
         self.tensors_shapes = data["shapes"]
         self.beta = "{:e}".format(data["beta"])
+        self.type = data['value_type']
+        self.indices_type = data['indices_type']
 
 
     def build_op(self):
-        output_type = "tensor<{}xf64>".format("x".join(str(v) for v in self.tensors_shapes[-1]))
-        # input_type = []
-        # for t in self.tensors_shapes[:-1]:
-        #     input_type.append("tensor<{}xf64>".format("x".join(str(v) for v in t)))
+        output_type = get_tensor_type(self.type, self.tensors_shapes[-1], self.formats[-1], self.indices_type[-1]) 
 
         return self.set_op_wrapper_text.render(
             dest = self.target,
@@ -258,9 +275,9 @@ class ScalarOp_Builder:
         self.tensors_shapes =[]
         for l in data["shapes"]:
             if isinstance(l, int):
-                self.tensors_shapes.append('f64')
+                self.tensors_shapes.append(data['value_type'])
             else:
-                self.tensors_shapes.append('tensor<1xf64>')
+                self.tensors_shapes.append('tensor<1x{}>'.format(data['value_type']))
 
         self.op = data["op"]
 
@@ -295,7 +312,6 @@ class ArithOp_Builder:
         +"({{inputtype}})"
         +"-> {{outputtype}}"
         + "\n" ,
-        # + '"ta.set_op"(%t{{dest}},%t{{dest}}) {__beta__ = {{beta}} : f64} : ({{outputtype}}, {{outputtype}}) -> ()\n',
         undefined=jinja2.StrictUndefined,
     )
 
@@ -388,17 +404,22 @@ class ArithOp_Builder:
         if "semiring" in data:
             self.semiring = data["semiring"]
         self.beta = "{:e}".format(data["beta"])
+        self.datatype = data["value_type"]
+        self.indices_type = data['indices_type']
 
     def build_op(self):
         input_type = []
-        for t in self.tensors_shapes[:-1]:
-            input_type.append("tensor<{}xf64>".format("x".join(str(v) for v in t)))
+        for t,f,it in zip(self.tensors_shapes[:-1],self.formats[:-1], self.indices_type[:-1]):
+            input_type.append(get_tensor_type(self.datatype, t, f, it))
+
+
         for t in self.tensors_shapes:
             for v in t:
-                input_type.append("!ta.indexlabel")
+                input_type.append("!ta.index")
         input_type = ",".join(input_type) 
         if self.mask_shape != None:
-            input_type += ",tensor<{}xf64>".format("x".join(str(v) for v in self.mask_shape))
+
+            input_type += ", " + get_tensor_type(self.datatype, self.mask_shape, CSR, self.indices_type[-1]) 
         # beta_val = ArithOp_Builder.get_beta_val(self.op)
         
         iMap = {}
@@ -431,7 +452,7 @@ class ArithOp_Builder:
         indexing_map.append(temp)
         indexing_maps = []
 
-        output_type = "tensor<{}xf64>".format("x".join(str(vMap[v]) for v in self.op_ilabels[-1]))
+        output_type = get_tensor_type(self.datatype, [vMap[v] for v in self.op_ilabels[-1]], self.formats[-1], self.indices_type[-1]) 
 
         for imap in indexing_map:
             indexing_maps.append("affine_map<({})->({})>".format(",".join(["d"+str(l) for l in range(i)]) , ",".join(["d"+str(l) for l in imap])))
@@ -568,10 +589,11 @@ class Tensor_Decl_Builder:
 
     def __init__(self, data)->None:
         self.lhs = data["id"]
-        self.inputtype = "tensor<{}x{}>".format("x".join(str(v) for v in data["shape"]), data["value_type"])
+        self.format = data["format"]
+        self.inputtype = get_tensor_type(data["value_type"], data["shape"], self.format, data["indices_type"])
+
         # self.decl_vars = data["dimsSSA"]
         self.decl_vars = []
-        self.format = data["format"]
         self.is_input = data["is_input"]
 
 
@@ -623,8 +645,29 @@ class PrintBuilder:
         if data["shapes"] == 1 or data["shapes"] == [1]:
             self.outtype = data["value_type"]
         else:
-            self.outtype = "x".join(str(v) for v in data["shapes"][0])
-            self.outtype = "tensor<{}x{}>".format(self.outtype, data["value_type"])
+            self.outtype = get_tensor_type(data['value_type'], data['shapes'][0], data['formats'][0], data['indices_type'][0]) 
+
+    def build_op(self):
+        return self.tensor_print_text.render(
+            tensor = self.operand,
+            outtype = self.outtype,
+        )
+
+class ReturnBuilder:
+    indentation_size = 4
+
+    tensor_print_text = jinja2.Template(
+        ("" * indentation_size)
+        +'"func.return"(%t{{tensor}}) : ({{outtype}}) -> ()\n',
+        undefined=jinja2.StrictUndefined,
+    )
+
+    def __init__(self, data): #operand, input_labels, dtype, label_map):
+        self.operand = data["operands"][0]
+        if data["shapes"] == 1 or data["shapes"] == [1]:
+            self.outtype = data["value_type"]
+        else:
+            self.outtype = get_tensor_type(data['value_type'], data['shapes'][0], data['formats'][0], data['indices_type'][0]) 
 
     def build_op(self):
         return self.tensor_print_text.render(

@@ -107,6 +107,8 @@ add_custom_target(comet-headers)
 set_target_properties(comet-headers PROPERTIES FOLDER "Misc")
 add_custom_target(comet-doc)
 
+set(CMAKE_INCLUDE_CURRENT_DIR ON)
+
 # Add MLIR, LLVM and BLIS headers to the include path
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
@@ -141,7 +143,7 @@ endif()
 add_subdirectory(include/comet)
 add_subdirectory(lib)
 add_subdirectory(frontends/comet_dsl)
-add_subdirectory(integration_test)
+add_subdirectory(test/integration)
 
 
 option(COMET_INCLUDE_DOCS "Generate build targets for the COMET docs.")
@@ -201,4 +203,10 @@ option(STANDALONE_INSTALL "Create an 'install' for packaging which doesn't \
 if (STANDALONE_INSTALL)
   message(STATUS "Setting an $ORIGIN-based RPATH on all executables")
   set_rpath_all_targets(${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
+option(DEBUG_MODE "Create a installation with debug information" off)
+if (DEBUG_MODE)
+  message(STATUS "Building comet in debug mode")
+  add_compile_options(-DCOMET_DEBUG_MODE)
 endif()

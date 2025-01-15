@@ -31,14 +31,24 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/IR/Attributes.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/TypeRange.h"
+#include "mlir/IR/ValueRange.h"
 
 #include <limits>
 #include <map>
 #include <set>
+#include <string>
 #include <unordered_map>
 
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
 using namespace mlir;
@@ -61,407 +71,189 @@ using namespace mlir::indexTree;
 //===----------------------------------------------------------------------===//
 namespace
 {
-  void mixModeEltWiseMultSparseTensorOutputLowering(Value computeOp, Location loc,
-                                                    std::vector<std::vector<int>> rshPerms,
-                                                    std::vector<Value> &dimSizes,
-                                                    std::vector<Value> &tensorload_sizes_vec,
-                                                    std::vector<Value> &array_sizes_vec,
-                                                    PatternRewriter &rewriter)
-  {
-
-    IndexType indexType = IndexType::get(computeOp.getContext());
-    FloatType f64Type = FloatType::getF64(computeOp.getContext());
-    auto dynamicmemTy_1d_index = MemRefType::get({ShapedType::kDynamic}, indexType); /// memref<?xindex>
-    auto dynamicmemTy_1d_f64 = MemRefType::get({ShapedType::kDynamic}, f64Type);     /// memref<?xf64>
-
-    comet_debug() << "mixModeEltWiseMultSparseTensorOutputLowering computeOp\n";
-    comet_vdump(computeOp);
-
-    ///  elementwise mul op in mix sparse dense case
-    ///  If elementwise, copy sparse input arrays for elementwise mul
-    int sparse_inputtensor_id = -1;
-    auto rhsComputeOp = computeOp.getDefiningOp()->getOperand(0).getDefiningOp();
-
-    auto first_operand = rhsComputeOp->getOperand(0).getDefiningOp();
-    auto second_operand = rhsComputeOp->getOperand(1).getDefiningOp();
-    comet_debug() << "EltWiseMult Operands:\n";
-    comet_pdump(first_operand);
-    comet_pdump(second_operand);
-
-    if (isa<tensorAlgebra::SparseTensorConstructOp>(first_operand))
-    {
-      sparse_inputtensor_id = 0;
-    }
-    else if (isa<tensorAlgebra::SparseTensorConstructOp>(second_operand))
-    {
-      sparse_inputtensor_id = 1;
-    }
-    else
-    {
-      llvm::errs() << "ERROR: SparseTensorConstructOp was not found as one of the operands for itCompute\n";
-    }
-
-    comet_debug() << " SparseTensorConstructOp for computeOp: \n";
-    comet_pdump(rhsComputeOp->getOperand(sparse_inputtensor_id).getDefiningOp());
-    auto sptensor_construct_op = cast<tensorAlgebra::SparseTensorConstructOp>(rhsComputeOp->getOperand(sparse_inputtensor_id).getDefiningOp());
-
-    for (unsigned int i = 0; i < 4 * (rshPerms[sparse_inputtensor_id].size()) + 1; i++)
-    {
-      comet_debug() << " in for loop\n";
-      Value intput_tensorload_op = cast<ToTensorOp>(sptensor_construct_op.getOperand(i).getDefiningOp());
-      Value input_alloc_op = cast<memref::AllocOp>(intput_tensorload_op.getDefiningOp()->getOperand(0).getDefiningOp());
-      comet_debug() << " AllocOp: ";
-      comet_vdump(input_alloc_op);
-
-      comet_debug() << " ";
-      Value input_alloc_op_param = input_alloc_op.getDefiningOp()->getOperand(0);
-      comet_debug() << " ";
-
-      Value output_alloc_op;
-      if (i < 4 * (rshPerms[sparse_inputtensor_id].size()))
-      {
-        /// Memory allocation for position and coordinate arrays in sparse tensor contractions
-        output_alloc_op = insertAllocAndInitialize(loc, dynamicmemTy_1d_index, ValueRange{input_alloc_op_param}, rewriter);
-      }
-      else
-      {
-        /// Memory allocation for value array in sparse tensor contractions
-        output_alloc_op = insertAllocAndInitialize(loc, dynamicmemTy_1d_f64, ValueRange{input_alloc_op_param}, rewriter); /// Cval array
-        comet_debug() << " AllocOp: ";
-        comet_vdump(output_alloc_op);
-      }
-
-      Value output_tensorload_op = rewriter.create<ToTensorOp>(loc, output_alloc_op);
-      tensorload_sizes_vec.push_back(output_tensorload_op);
-    }
-    comet_debug() << " ";
-
-    /// [0...2d, 2d+1...4d+1, 4d+2...5d+1]
-    for (unsigned int i = 0; i < 4 * (rshPerms[sparse_inputtensor_id].size()) + 1; i++)
-    {
-      int sizes_i = i + 4 * (rshPerms[sparse_inputtensor_id].size()) + 1;
-      comet_debug() << " ";
-      comet_pdump(sptensor_construct_op.getOperand(sizes_i).getDefiningOp());
-
-      Value input_load_op = sptensor_construct_op.getOperand(sizes_i);
-      comet_debug() << "Ops push_back for Sparse Tensor Construct Op for MixedMode elementwise multiplication (array_sizes_vec):\n";
-      comet_vdump(input_load_op);
-      array_sizes_vec.push_back(input_load_op);
-    }
-
-    for (unsigned int i = 0; i < rshPerms[sparse_inputtensor_id].size(); i++)
-    {
-      int sizes_i = i + 2 * (2 * (rshPerms[sparse_inputtensor_id].size()) + 1);
-      comet_debug() << " ";
-      comet_pdump(sptensor_construct_op.getOperand(sizes_i).getDefiningOp());
-
-      Value input_load_op = sptensor_construct_op.getOperand(sizes_i);
-      comet_debug() << "Ops push_back for Sparse Tensor Construct Op for MixedMode elementwise multiplication (dimSizes):\n";
-      comet_vdump(input_load_op);
-      dimSizes.push_back(input_load_op);
-    }
-  }
-
-  template <typename T>
-  void pureSparseMultSparseTensorOutputLowering(T op,
-                                                Location loc,
-                                                std::string sparseOutputFormat,
-                                                std::vector<Value> &dimSizes,
-                                                std::vector<Value> &tensorload_sizes_vec,
-                                                std::vector<Value> &array_sizes_vec,
-                                                PatternRewriter &rewriter)
-  {
-    comet_debug() << " sparse output is used in itComputeOp op\n";
-    comet_debug() << " sparseOutputFormat: " << sparseOutputFormat << "\n";
-
-    comet_vdump(op);
-
-    IndexType indexType = IndexType::get(op.getContext());
-    FloatType f64Type = FloatType::getF64(op.getContext());
-    auto dynamicmemTy_1d_index = MemRefType::get({ShapedType::kDynamic}, indexType); /// memref<?xindex>
-    auto dynamicmemTy_1d_f64 = MemRefType::get({ShapedType::kDynamic}, f64Type);     /// memref<?xf64>
-
-    Value cst_index_0 = rewriter.create<ConstantOp>(loc, IndexType::get(op.getContext()), rewriter.getIndexAttr(0));
-    comet_vdump(cst_index_0);
-    Value cst_index_1 = rewriter.create<ConstantOp>(loc, IndexType::get(op.getContext()), rewriter.getIndexAttr(1));
-    comet_vdump(cst_index_1);
-    comet_vdump(op);
-    comet_pdump(op.getOperation());
-    
-    unsigned int tensor_rank = op.getResult().getType().getRank();
-
-    std::vector<mlir::Value> array_sizes;
-    std::vector<mlir::Value> array_sizes_alloc_vec;
-    std::vector<mlir::Value> initial_array_sizes;
-
-    if (sparseOutputFormat.compare("CSR") == 0)
-    { /// CSR format
-      comet_debug() << " 2D CSR format in sparse output decl op\n";
-      /// AllocOp, storeOp, LoadOp
-      initial_array_sizes.push_back(cst_index_1);
-      initial_array_sizes.push_back(cst_index_1);
-
-      /// A1tile
-      initial_array_sizes.push_back(cst_index_0);
-      initial_array_sizes.push_back(cst_index_0);
-
-      /// The other three size information size..
-      /// get the dimension size from operand or type
-
-      TensorType t = op.getResult().getType();
-      for(int i = 0; i < t.getRank(); i++)
-      {
-        if(t.isDynamicDim(i))
-        {
-          dimSizes.push_back(op.getOperation()->getOperand(i));
-        }
-        else
-        {
-          dimSizes.push_back(rewriter.create<ConstantIndexOp>(loc, t.getShape()[i] ));
-        }
-      }
-
-      /// The dim size is the second parameter of the
-      Value dim2_posSize = rewriter.create<AddIOp>(loc, dimSizes[0], cst_index_1);
-      comet_debug() << "AddIOp generated for dim2_posSize:\n";
-      comet_vdump(dim2_posSize);
-      initial_array_sizes.push_back(dim2_posSize);
-
-      Value dim2_crdSize = rewriter.create<MulIOp>(loc, dimSizes[0], dimSizes[1]);
-      initial_array_sizes.push_back(dim2_crdSize);
-
-      /// A2tile
-      initial_array_sizes.push_back(cst_index_0);
-      initial_array_sizes.push_back(cst_index_0);
-
-      /// Aval
-      initial_array_sizes.push_back(dim2_crdSize);
-      comet_debug() << " ";
-      comet_vdump(dim2_crdSize);
-    }
-    else
-    {
-      llvm::errs() << __FILE__ << ":" << __LINE__ << "Not supported format\n";
-    }
-
-    /// same with transpose case
-    comet_debug() << " initial_array_sizes.size(): " << initial_array_sizes.size() << "\n";
-    comet_debug() << " tensor_rank: " << tensor_rank << "\n";
-    std::vector<Value> array_alloc_vec;
-    for (unsigned int i = 0; i < 4 * tensor_rank + 1; i++)
-    {
-      Value alloc_sizes;
-      if (i < 4 * tensor_rank)
-      {
-        comet_debug() << " Inserting AllocOp: ";
-        alloc_sizes = insertAllocAndInitialize(loc, dynamicmemTy_1d_index, ValueRange{initial_array_sizes[i]}, rewriter);
-        comet_debug() << " AllocOp: ";
-        comet_vdump(alloc_sizes);
-      }
-      else
-      {
-        alloc_sizes = insertAllocAndInitialize(loc, dynamicmemTy_1d_f64, ValueRange{initial_array_sizes[i]}, rewriter);
-        comet_debug() << " AllocOp: ";
-        comet_vdump(alloc_sizes);
-      }
-      Value tensorload_sizes = rewriter.create<ToTensorOp>(loc, alloc_sizes);
-      tensorload_sizes_vec.push_back(tensorload_sizes);
-      array_alloc_vec.push_back(alloc_sizes);
-    }
-
-    /// Initialize the sizes of pos/crd/val arrays
-    array_sizes.push_back(cst_index_1); /// A1pos_size
-    array_sizes.push_back(cst_index_1); /// A1crd_size
-    array_sizes.push_back(cst_index_1); /// A1tile_pos_size
-    array_sizes.push_back(cst_index_0); /// A1tile_crd_size
-    array_sizes.push_back(cst_index_1); /// A2pos_size
-    array_sizes.push_back(cst_index_0); /// A2crd_size
-    array_sizes.push_back(cst_index_0); /// A2tile_pos_size
-    array_sizes.push_back(cst_index_1); /// A2tile_crd_size
-    array_sizes.push_back(cst_index_0); /// Aval_size
-    /// put the array sizes into alloc/store/loadOp
-    for (auto size : array_sizes)
-    {
-      MemRefType memTy_alloc_sizes = MemRefType::get({1}, IndexType::get(op.getContext()));
-      Value allocop = rewriter.create<memref::AllocOp>(loc, memTy_alloc_sizes);
-      rewriter.create<memref::StoreOp>(loc, size, allocop, ValueRange{cst_index_0});
-      Value loadop = rewriter.create<memref::LoadOp>(loc, allocop, ValueRange{cst_index_0});
-      array_sizes_vec.push_back(loadop);
-      array_sizes_alloc_vec.push_back(allocop);
-    }
-
-    rewriter.create<memref::StoreOp>(loc, dimSizes[0], array_alloc_vec[0], ValueRange{cst_index_0});
-  }
-
-  void insertReadFileLibCall(int rank_size, MLIRContext *ctx, ModuleOp &module, func::FuncOp function)
+  void insertReadFileLibCall(int rank_size, Type floatEleType, Type indicesType, MLIRContext *ctx, ModuleOp &module, func::FuncOp function)
   {
     comet_debug() << "Inserting insertReadFileLibCall\n";
-    FloatType f32Type, f64Type;
-    if (VALUETYPE.compare("f32") == 0)
-    {
-      f32Type = FloatType::getF32(ctx);
-    }
-    else
-    {
-      f64Type = FloatType::getF64(ctx);
-    }
-
     IndexType indexType = IndexType::get(function.getContext());
     IntegerType i32Type = IntegerType::get(ctx, 32);
-    auto unrankedMemref_f64 = mlir::UnrankedMemRefType::get(f64Type, 0);
-    /// TODO(gkestor): there is an issue with F32 UnrankedMemRefType
-    auto unrankedMemref_f32 = mlir::UnrankedMemRefType::get(f64Type, 0);
     auto unrankedMemref_index = mlir::UnrankedMemRefType::get(indexType, 0);
+    auto unrankedMemref_element_type = mlir::UnrankedMemRefType::get(floatEleType, 0);
+    auto unrankedMemref_indices_type = mlir::UnrankedMemRefType::get(indicesType, 0);
+    llvm::SmallVector<Type, 21> inputFuncArgTypes;
+    llvm::SmallVector<Type, 10> inputSizeFuncArgTypes;
+    inputFuncArgTypes.push_back(i32Type);
+    inputSizeFuncArgTypes.push_back(i32Type);
+    for(int i = 0; i < rank_size * 2; i++)
+    {
+      inputFuncArgTypes.push_back(indexType);
+      inputSizeFuncArgTypes.push_back(indexType);
+    }
+    for(int i = 0; i < rank_size * 4; i++)
+    {
+      inputFuncArgTypes.push_back(unrankedMemref_indices_type);
+    }
+    inputSizeFuncArgTypes.push_back(unrankedMemref_index);
+    inputFuncArgTypes.push_back(unrankedMemref_element_type);
+    inputSizeFuncArgTypes.push_back(i32Type);
+    inputFuncArgTypes.push_back(i32Type);
 
+    auto readInpuFunc = FunctionType::get(ctx, TypeRange(inputFuncArgTypes), {});
+    assert(rank_size <=3 && rank_size >=2);
+
+    std::string func_name = "read_input_"+std::to_string(rank_size)+"D";
+    if (floatEleType.isF32())
+    {
+      func_name += "_f32";
+    }
+    else if (floatEleType.isF64())
+    {
+      func_name += "_f64";
+    }
+    else 
+    {
+      assert(false && "Unexpected type");
+    }
+
+    if(indicesType.isIndex())
+    {
+      func_name += "_64";
+    }
+    else if(indicesType.isInteger(32))
+    {
+      func_name += "_i32";
+    }
+    else if(indicesType.isInteger(64))
+    {
+      func_name += "_i64";
+    }
+    else 
+    {
+      assert(false && "Unexpected type");
+    }
+
+    if (!hasFuncDeclaration(module, func_name))
+    {
+      comet_debug() << "Adding " << func_name <<" to the module\n";
+      func::FuncOp func1 = func::FuncOp::create(function.getLoc(), func_name,
+                                                readInpuFunc, ArrayRef<NamedAttribute>{});
+      func1.setPrivate();
+      module.push_back(func1);
+    }
+
+
+    auto readInputSizesFunc = FunctionType::get(ctx, TypeRange(inputSizeFuncArgTypes), {}); /// last arg (i32Type): readMode
+
+    std::string input_size_func_name = "read_input_sizes_"+std::to_string(rank_size)+"D";
+    if (floatEleType.isF32())
+    {
+      input_size_func_name+="_f32";
+    }
+    else if (floatEleType.isF64())
+    {
+      input_size_func_name+="_f64";
+    }
+    else 
+    {
+      assert(false && "Unsupported type");
+    }
+
+
+    if (!hasFuncDeclaration(module, input_size_func_name))
+    {
+      comet_debug() << "Adding read_input_sizes_2D_f32 to the module\n";
+      func::FuncOp func1 = func::FuncOp::create(function.getLoc(), input_size_func_name,
+                                                readInputSizesFunc, ArrayRef<NamedAttribute>{});
+      func1.setPrivate();
+      module.push_back(func1);
+    }
+  }
+
+Value insertSparseTensorDeclOp(PatternRewriter & rewriter,
+                               MLIRContext* ctx,
+                               Location loc,
+                               unsigned rank_size, 
+                               std::vector<Value>& tensorload_sizes_vec,
+                               std::vector<Value>& array_sizes_vec,
+                               std::vector<std::vector<int64_t>>& allPerms,
+                               std::vector<Value>& dimSizes,
+                               std::string formats_str,
+                               Type ty)
+  {
+    comet_debug() << " Get users after ";
+    /// create sparse tensor construct after lowering each sparse tensor output users
+    comet_debug() << " tensorload_sizes_vec.size(): " << tensorload_sizes_vec.size() << ", rank_size: " << rank_size << "\n";
+    /// create sptensor_construct
+    
+    std::vector<TensorFormatEnum> dim_formats = mlir::tensorAlgebra::getFormats(formats_str, rank_size, ctx);
+    llvm::SmallVector<Attribute, 4> dim_formats_attr;
+    for(TensorFormatEnum& format: dim_formats)
+    {
+      dim_formats_attr.push_back(TensorFormatEnumAttr::get(ctx,format));
+    }
+
+    Value sptensor;
     if (rank_size == 2)
     {
-      comet_debug() << " Rank Size is 2\n";
-      auto readInput2DF32Func = FunctionType::get(ctx, {i32Type, indexType, indexType,              /// A1_format, A1_tile_format
-                                                        indexType, indexType,                       /// A2_format, A2_tile_format
-                                                        unrankedMemref_index, unrankedMemref_index, /// A1_pos, A1_crd
-                                                        unrankedMemref_index, unrankedMemref_index, /// A1_tile_pos, A1_tile_crd
-                                                        unrankedMemref_index, unrankedMemref_index, /// A2_pos, A2_crd
-                                                        unrankedMemref_index, unrankedMemref_index, /// A2_tile_pos, A2_tile_crd
-                                                        unrankedMemref_f32, i32Type},
-                                                  {});                                              /// last arg (i32Type): readMode
-      auto readInput2DF64Func = FunctionType::get(ctx, {i32Type, indexType, indexType,              /// A1_format, A1_tile_format
-                                                        indexType, indexType,                       /// A2_format, A2_tile_format
-                                                        unrankedMemref_index, unrankedMemref_index, /// A1_pos, A1_crd
-                                                        unrankedMemref_index, unrankedMemref_index, /// A1_tile_pos, A1_tile_crd
-                                                        unrankedMemref_index, unrankedMemref_index, /// A2_pos, A2_crd
-                                                        unrankedMemref_index, unrankedMemref_index, /// A2_tile_pos, A2_tile_crd
-                                                        unrankedMemref_f64, i32Type},
-                                                  {});
-
-      if (VALUETYPE.compare("f32") == 0)
-      {
-        std::string func_name = "read_input_2D_f32";
-        if (!hasFuncDeclaration(module, func_name))
-        {
-          comet_debug() << "Adding read_input_2D_f32 to the module\n";
-          func::FuncOp func1 = func::FuncOp::create(function.getLoc(), func_name,
-                                                    readInput2DF32Func, ArrayRef<NamedAttribute>{});
-          func1.setPrivate();
-          module.push_back(func1);
-        }
-      }
-      else /// f64
-      {
-        std::string func_name = "read_input_2D_f64";
-        if (!hasFuncDeclaration(module, func_name))
-        {
-          comet_debug() << "Adding read_input_2D_f64 to the module\n";
-          func::FuncOp func1 = func::FuncOp::create(function.getLoc(), func_name,
-                                                    readInput2DF64Func, ArrayRef<NamedAttribute>{});
-          func1.setPrivate();
-          module.push_back(func1);
-        }
-      }
-
-      auto readInputSizes2DF64Func = FunctionType::get(ctx, {i32Type, indexType, indexType, indexType, indexType, unrankedMemref_index, i32Type}, {}); /// last arg (i32Type): readMode
-
-      if (VALUETYPE.compare("f32") == 0)
-      {
-        std::string func_name = "read_input_sizes_2D_f32";
-        if (!hasFuncDeclaration(module, func_name))
-        {
-          comet_debug() << "Adding read_input_sizes_2D_f32 to the module\n";
-          func::FuncOp func1 = func::FuncOp::create(function.getLoc(), func_name,
-                                                    readInputSizes2DF64Func, ArrayRef<NamedAttribute>{});
-          func1.setPrivate();
-          module.push_back(func1);
-        }
-      }
-      else
-      {
-        std::string func_name = "read_input_sizes_2D_f64";
-        if (!hasFuncDeclaration(module, func_name))
-        {
-          comet_debug() << "Adding read_input_sizes_2D_f64 to the module\n";
-          func::FuncOp func1 = func::FuncOp::create(function.getLoc(), func_name,
-                                                    readInputSizes2DF64Func, ArrayRef<NamedAttribute>{});
-          func1.setPrivate();
-          module.push_back(func1);
-        }
-      }
+      Value dims = rewriter.create<tensor::FromElementsOp>(loc, ValueRange{dimSizes[0], dimSizes[1]});
+      sptensor = rewriter.create<tensorAlgebra::SparseTensorConstructOp>(loc, ty,
+                                                                          dims,
+                                                                          ValueRange{
+                                                                              tensorload_sizes_vec[0], /// A1pos (each dimension consists of pos and crd arrays)
+                                                                              tensorload_sizes_vec[4], /// A2pos
+                                                                          },
+                                                                          ValueRange{
+                                                                              tensorload_sizes_vec[1], /// A1crd
+                                                                              tensorload_sizes_vec[5], /// A2crd
+                                                                          },
+                                                                          ValueRange {
+                                                                              tensorload_sizes_vec[2], /// A1tile_pos
+                                                                              tensorload_sizes_vec[6], /// A2tile_pos
+                                                                          },
+                                                                          ValueRange {
+                                                                              tensorload_sizes_vec[3], /// A1tile_crd
+                                                                              tensorload_sizes_vec[7], /// A2tile_crd
+                                                                          },
+                                                                          tensorload_sizes_vec[8], /// Aval
+                                                                           2, ArrayAttr::get(ctx, dim_formats_attr));
     }
-    /// 3D tensor
     else if (rank_size == 3)
     {
-      auto readInput3DF32Func = FunctionType::get(ctx, {i32Type, indexType, indexType, indexType, indexType, indexType, indexType, /// Dimensions
-                                                        unrankedMemref_index, unrankedMemref_index,                                /// A1
-                                                        unrankedMemref_index, unrankedMemref_index,                                /// A1_tile
-                                                        unrankedMemref_index, unrankedMemref_index,                                /// A2
-                                                        unrankedMemref_index, unrankedMemref_index,                                /// A2_tile
-                                                        unrankedMemref_index, unrankedMemref_index,                                /// A3
-                                                        unrankedMemref_index, unrankedMemref_index,                                /// A3_tile
-                                                        unrankedMemref_f32, i32Type},
-                                                  {});                                                                             /// last arg (i32Type): readMode
-      auto readInput3DF64Func = FunctionType::get(ctx, {i32Type, indexType, indexType, indexType, indexType, indexType, indexType, /// Dimensions
-                                                        unrankedMemref_index, unrankedMemref_index,                                /// A1
-                                                        unrankedMemref_index, unrankedMemref_index,                                /// A1_tile
-                                                        unrankedMemref_index, unrankedMemref_index,                                /// A2
-                                                        unrankedMemref_index, unrankedMemref_index,                                /// A2_tile
-                                                        unrankedMemref_index, unrankedMemref_index,                                /// A3
-                                                        unrankedMemref_index, unrankedMemref_index,                                /// A3_tile
-                                                        unrankedMemref_f64, i32Type},
-                                                  {});
+      Value dims = rewriter.create<tensor::FromElementsOp>(loc, ValueRange{dimSizes[0], dimSizes[1], dimSizes[2]});
 
-      if (VALUETYPE.compare("f32") == 0)
-      {
-        std::string func_name = "read_input_3D_f32";
-        if (!hasFuncDeclaration(module, func_name))
-        {
-          func::FuncOp func1 = func::FuncOp::create(function.getLoc(), func_name,
-                                                    readInput3DF32Func, ArrayRef<NamedAttribute>{});
-          func1.setPrivate();
-          module.push_back(func1);
-        }
-      }
-      else
-      {
-        std::string func_name = "read_input_3D_f64";
-        if (!hasFuncDeclaration(module, func_name))
-        {
-          comet_debug() << " Insert read_input_3D_f64 decl\n";
-          func::FuncOp func1 = func::FuncOp::create(function.getLoc(), func_name,
-                                                    readInput3DF64Func, ArrayRef<NamedAttribute>{});
-          func1.setPrivate();
-          module.push_back(func1);
-        }
-      }
-
-      auto readInputSizes3DF64Func = FunctionType::get(ctx, {i32Type, indexType, indexType, indexType, indexType, indexType, indexType, unrankedMemref_index, i32Type}, {}); /// last arg (i32Type): readMode
-
-      if (VALUETYPE.compare("f32") == 0)
-      {
-
-        std::string func_name = "read_input_sizes_3D_f32";
-        if (!hasFuncDeclaration(module, func_name))
-        {
-          func::FuncOp func1 = func::FuncOp::create(function.getLoc(), func_name,
-                                                    readInputSizes3DF64Func, ArrayRef<NamedAttribute>{});
-          func1.setPrivate();
-          module.push_back(func1);
-        }
-      }
-      else
-      {
-        std::string func_name = "read_input_sizes_3D_f64";
-        if (!hasFuncDeclaration(module, func_name))
-        {
-          comet_debug() << " Insert read_input_sizes_3D_f64 decl\n";
-          func::FuncOp func1 = func::FuncOp::create(function.getLoc(), func_name,
-                                                    readInputSizes3DF64Func, ArrayRef<NamedAttribute>{});
-          func1.setPrivate();
-          module.push_back(func1);
-        }
-      }
+      sptensor = rewriter.create<tensorAlgebra::SparseTensorConstructOp>(loc, ty, dims,
+                                                                          ValueRange{
+                                                                              tensorload_sizes_vec[0],  /// A1pos (each dimension consists of pos and crd arrays)
+                                                                              tensorload_sizes_vec[4],  /// A2pos
+                                                                              tensorload_sizes_vec[8],  /// A3pos
+                                                                          },
+                                                                          ValueRange{
+                                                                              tensorload_sizes_vec[1],  /// A1crd
+                                                                              tensorload_sizes_vec[5],  /// A2crd
+                                                                              tensorload_sizes_vec[9],  /// A3crd
+                                                                          },
+                                                                          ValueRange{
+                                                                              tensorload_sizes_vec[2],  /// A1tile_pos
+                                                                              tensorload_sizes_vec[6],  /// A2tile_pos
+                                                                              tensorload_sizes_vec[10], /// A3tile_pos
+                                                                          },
+                                                                          ValueRange{
+                                                                              tensorload_sizes_vec[3],  /// A1tile_crd
+                                                                              tensorload_sizes_vec[7],  /// A2tile_crd
+                                                                              tensorload_sizes_vec[11], /// A3tile_crd
+                                                                          },
+                                                                          // ValueRange{
+                                                                          tensorload_sizes_vec[12], /// Aval
+                                                                          3, ArrayAttr::get(ctx, dim_formats_attr));
     }
     else
     {
-      llvm::errs() << __LINE__ << "Not supported dims\n";
+      llvm::errs() << __FILE__ << ":" << __LINE__ << "ERROR: Not supported format (Tensors of dimensions greater than 3 are currently not supported).\n";
     }
+
+    comet_debug() << "SparseTensorConstructOp generated for sparse output tensor:\n";
+    comet_vdump(sptensor);
+
+    return sptensor;
   }
 
   /// This a common lowering function used to lower SparseOutputTensorDeclOp and TempSparseOutputTensorDeclOp
@@ -476,9 +268,13 @@ namespace
     {
       comet_debug() << "lowerSparseOutputTensorDec::TempSparseOutputTensorDeclOp lowering\n";
     }
+    else 
+    {
+      assert(false && "Op should be either SparseOutputTensorDeclOp or TempSparseOutputTensorDeclOp");
+    }
 
-    assert(isa<SparseOutputTensorDeclOp>(op) || (isa<TempSparseOutputTensorDeclOp>(op) &&
-                                                    "Op should be either SparseOutputTensorDeclOp or TempSparseOutputTensorDeclOp"));
+    SparseTensorType spType = mlir::cast<SparseTensorType>(op->getResultTypes()[0]);
+
 
     comet_vdump(op);
     auto loc = op.getLoc();
@@ -487,18 +283,20 @@ namespace
     comet_debug() << " --- " << formats_str << "\n";
 
     comet_debug() << " " << op.getNumOperands() << "\n";
-    auto rank_size = op.getResult().getType().getRank();
+    auto rank_size = mlir::cast<SparseTensorType>(op.getResult().getType()).getRank();
 
     IndexType indexType = IndexType::get(op.getContext());
-    FloatType f64Type = FloatType::getF64(op.getContext());
-    if (VALUETYPE.compare(0, 3, "f32") == 0)
-      f64Type = FloatType::getF32(op.getContext());
+    Type valsType = spType.getElementType();
+    Type indicesType = spType.getIndicesType();
 
     /// A1_pos ... A_value
     auto dynamicmemTy_1d_index = MemRefType::get({ShapedType::kDynamic}, indexType); /// memref<?xindex>
-    auto dynamicmemTy_1d_f64 = MemRefType::get({ShapedType::kDynamic}, f64Type);     /// memref<?xf64>
+    auto dynamicmemTy_1d_vals_type = MemRefType::get({ShapedType::kDynamic}, valsType);     /// memref<?xf64>
+    auto dynamicmemTy_1d_indices_type = MemRefType::get({ShapedType::kDynamic}, indicesType); 
 
     comet_debug() << " " << formats_str << " isDense: " << isDense(formats_str, ", ") << "\n";
+
+    Value new_tensor;
 
     /// sparse output
     if (isDense(formats_str, ", ") == false)
@@ -506,7 +304,6 @@ namespace
       /// search read_from_file function call to get the input file name
       /// Currently, has no filename
 
-      std::vector<Value> tensorload_sizes_vec;
       std::vector<Value> array_sizes_vec; /// Store the size of C1pos, C1crd,..., Cval,C_dim1_size, C_dim2_size....
 
       /// No need to read from file
@@ -600,22 +397,22 @@ namespace
           comet_vdump(dst_input);
           comet_debug() << " ";
           comet_pdump(dst_input.getDefiningOp());
-          mlir::TensorType type;
+          mlir::tensorAlgebra::SparseTensorType type;
           auto res = dst_input.getDefiningOp()->getResult(0);
-          if (res.getType().isa<TensorType>())
+          if (res.getType().isa<tensorAlgebra::SparseTensorType>())
           {
-            type = res.getType().cast<TensorType>();
+            type = res.getType().cast<tensorAlgebra::SparseTensorType>();
           }
           else
           {
-            assert(false && "Expected TensorType");
+            assert(false && "Expected SparseTensorType");
           }
           // unsigned int dst_rank = dst_input.getDefiningOp()->getNumOperands();
           unsigned int dst_rank = type.getRank();
           for (unsigned int i = 0; i < dst_rank; i++)
           {
             /// 4*rank+2 + i
-            dimSizes.push_back(src_input.getDefiningOp()->getOperand(8 * dst_rank + 2 + dstIndexLocInSrcVec[i]));
+            dimSizes.push_back(rewriter.create<SpTensorGetDimSize>(loc, src_input, rewriter.getI32IntegerAttr(i)));
           }
 
           Value cst_index_0 = rewriter.create<ConstantOp>(loc, IndexType::get(op.getContext()), rewriter.getIndexAttr(0));
@@ -640,13 +437,13 @@ namespace
               unsigned int posLocInSrc2 = posLocInSrc + 2;
               unsigned int crdLocInSrc2 = crdLocInSrc + 2;
 
-              array_sizes_vec.push_back(src_input.getDefiningOp()->getOperand(posLocInSrc));
-              array_sizes_vec.push_back(src_input.getDefiningOp()->getOperand(crdLocInSrc));
-              array_sizes_vec.push_back(src_input.getDefiningOp()->getOperand(posLocInSrc2));
-              array_sizes_vec.push_back(src_input.getDefiningOp()->getOperand(crdLocInSrc2));
+              array_sizes_vec.push_back(rewriter.create<tensor::DimOp>(loc, rewriter.create<SpTensorGetDimPos>(loc, src_input, rewriter.getI32IntegerAttr(0)), 0));
+              array_sizes_vec.push_back(rewriter.create<tensor::DimOp>(loc, rewriter.create<SpTensorGetDimCrd>(loc, src_input, rewriter.getI32IntegerAttr(0)), 0));
+              array_sizes_vec.push_back(rewriter.create<tensor::DimOp>(loc, rewriter.create<SpTensorGetDimPos>(loc, src_input, rewriter.getI32IntegerAttr(1)), 0));
+              array_sizes_vec.push_back(rewriter.create<tensor::DimOp>(loc, rewriter.create<SpTensorGetDimCrd>(loc, src_input, rewriter.getI32IntegerAttr(1)), 0));
             }
             /// val array size
-            array_sizes_vec.push_back(src_input.getDefiningOp()->getOperand(8 * dst_rank + 1));
+            array_sizes_vec.push_back(rewriter.create<tensor::DimOp>(loc, rewriter.create<SpTensorGetVals>(loc, RankedTensorType::get({ShapedType::kDynamic}, src_input.getType().cast<SparseTensorType>().getElementType()), src_input), 0));
 
             /// set the pos array size, 1st dim as 2, all others as 1.
             for (unsigned int i = 0; i < dst_rank * 2; i++)
@@ -680,16 +477,15 @@ namespace
               comet_vdump(crd_size);
               array_sizes_vec.push_back(crd_size);
               /// B2pos, Bval are the same size with A2pos, Aval
-              /// TODO(gkestor): Do not hardcode
-              array_sizes_vec.push_back(src_input.getDefiningOp()->getOperand(17));
+              mlir::Value vals_size = rewriter.create<tensor::DimOp>(loc, rewriter.create<SpTensorGetVals>(loc, RankedTensorType::get({ShapedType::kDynamic}, src_input.getType().cast<SparseTensorType>().getElementType()), src_input), 0);
+              array_sizes_vec.push_back(vals_size);
 
               /// A2tile
               array_sizes_vec.push_back(cst_index_0);
               array_sizes_vec.push_back(cst_index_0);
 
               /// Aval
-              /// TODO(gkestor): Do not hardcode
-              array_sizes_vec.push_back(src_input.getDefiningOp()->getOperand(17));
+              array_sizes_vec.push_back(vals_size);
             }
             else if (src_format.compare("ELL") == 0)
             {
@@ -705,16 +501,15 @@ namespace
 
               /// A2
               array_sizes_vec.push_back(cst_index_1);
-              /// TODO(gkestor): Do not hardcode
-              array_sizes_vec.push_back(src_input.getDefiningOp()->getOperand(14));
+              /// TODO(PT): Verify this
+              array_sizes_vec.push_back(rewriter.create<tensor::DimOp>(loc, rewriter.create<SpTensorGetDimCrd>(loc, src_input, rewriter.getI32IntegerAttr(1)), 0));
 
               /// A2tile
               array_sizes_vec.push_back(cst_index_0);
               array_sizes_vec.push_back(cst_index_0);
 
               /// Aval
-              /// TODO(gkestor): Do not hardcode
-              array_sizes_vec.push_back(src_input.getDefiningOp()->getOperand(17));
+              mlir::Value vals_size = rewriter.create<tensor::DimOp>(loc, rewriter.create<SpTensorGetVals>(loc, src_input), 0);
             }
           }
           /// For 3D, consider CSF
@@ -724,7 +519,9 @@ namespace
             {
               comet_debug() << " 3D CSF transpose to 3D CSF\n";
               array_sizes_vec.push_back(cst_index_2);
-              mlir::Value src_nnz = src_input.getDefiningOp()->getOperand(25); 
+              mlir::Value vals_size = rewriter.create<tensor::DimOp>(loc, rewriter.create<SpTensorGetVals>(loc, src_input), 0);
+
+              mlir::Value src_nnz = vals_size; 
               mlir::Value src_nnz_add1 = rewriter.create<AddIOp>(loc, src_nnz, cst_index_1);
               comet_debug() << "AddIOp generated for nnz for CSF:\n";
               comet_vdump(src_nnz_add1);
@@ -747,278 +544,62 @@ namespace
 
           comet_debug() << " array_sizes_vec.size(): " << array_sizes_vec.size() << "\n";
           comet_debug() << " dst_rank: " << dst_rank << "\n";
+          std::vector<Value> tensorload_sizes_vec;
           for (unsigned int i = 0; i < 4 * dst_rank + 1; i++)
           {
             Value alloc_sizes;
             if (i < 4 * dst_rank)
             {
-              alloc_sizes = insertAllocAndInitialize(loc, dynamicmemTy_1d_index, ValueRange{array_sizes_vec[i]}, rewriter);
+              alloc_sizes = insertAllocAndInitialize(loc, dynamicmemTy_1d_indices_type, ValueRange{array_sizes_vec[i]}, rewriter);
               comet_debug() << " AllocOp: ";
               comet_vdump(alloc_sizes);
             }
             else
             {
-              alloc_sizes = insertAllocAndInitialize(loc, dynamicmemTy_1d_f64, ValueRange{array_sizes_vec[i]}, rewriter);
+              alloc_sizes = insertAllocAndInitialize(loc, dynamicmemTy_1d_vals_type, ValueRange{array_sizes_vec[i]}, rewriter);
               comet_debug() << " AllocOp: ";
               comet_vdump(alloc_sizes);
             }
-            Value tensorload_sizes = rewriter.create<ToTensorOp>(loc, alloc_sizes);
+            Value tensorload_sizes = rewriter.create<ToTensorOp>(loc, alloc_sizes, rewriter.getUnitAttr(), rewriter.getUnitAttr());
             tensorload_sizes_vec.push_back(tensorload_sizes);
           }
+          new_tensor = insertSparseTensorDeclOp(rewriter, op.getContext(), loc, rank_size, tensorload_sizes_vec, array_sizes_vec, allPerms, dimSizes, formats_str, op.getResult().getType());
+          break;
         }
-        else if (isa<indexTree::IndexTreeComputeLHSOp>(u))
+        else if (isa<indexTree::IndexTreeLHSOperandOp>(u))
         {
-          comet_debug() << " sparse output is used in itComputeOp op\n";
+          comet_debug() << " Sparse output is used in it.LHSOperandOp\n";
+          // Tensor is created as the output of a sparse tensor operation
+          // For now we defer to the index tree dialect by inserting a tensor decl
+          // that just contains empty domains.
+          auto lhs_op = llvm::cast<indexTree::IndexTreeLHSOperandOp>(u);
+          rank_size = lhs_op.getCrds().size();
+          indexTree::DomainType domain_type = indexTree::DomainType::get(op.getContext()); 
+          rewriter.setInsertionPoint(op);
+          Value empty_domain = rewriter.create<indexTree::IndexTreeEmptyDomainOp>(loc, domain_type);
+          llvm::SmallVector<Value> args = llvm::SmallVector<Value>(rank_size, empty_domain);
 
-          /// Set the insertion point before its user
-          rewriter.setInsertionPoint(u);
+          new_tensor = rewriter.create<indexTree::IndexTreeSparseTensorOp>(loc, op.getResult().getType(), args);
 
-          indexTree::IndexTreeComputeLHSOp lhsOp = cast<indexTree::IndexTreeComputeLHSOp>(u);
-          comet_debug() << " formats_str: " << formats_str << "\n";
-          comet_debug() << " current Op: ";
-          comet_vdump(lhsOp);
 
-          for (auto uLHS : lhsOp.getOperation()->getUsers())
-          {
-            assert(isa<indexTree::IndexTreeComputeOp>(uLHS) && "User of IndexTreeComputeLHSOp can only be IndexTreeComputeOp");
-
-            comet_debug() << " lhsOp user: ";
-            comet_pdump(uLHS);
-
-            auto computeOp = cast<indexTree::IndexTreeComputeOp>(uLHS);
-            comet_debug() << " Get RHS op: ";
-            comet_vdump(computeOp);
-
-            std::vector<std::vector<int>> rhsPerms;
-            getRHSPermsOfComputeOp(computeOp, rhsPerms);
-
-            std::vector<std::vector<std::string>> rhsFormats;
-            getRHSFormatsOfComputeOp(computeOp, rhsFormats);
-
-            comet_debug() << " rhsPerms: \n";
-            for (auto m : rhsPerms)
-            {
-              comet_debug() << " \n";
-              for (auto n : m)
-              {
-                comet_debug() << n << " \n";
-              }
-              comet_debug() << "\n";
-            }
-
-            comet_debug() << " rhsFormats: \n";
-            for (auto m : rhsFormats)
-            {
-              comet_debug() << " \n";
-              for (auto n : m)
-              {
-                comet_debug() << n << " \n";
-              }
-              comet_debug() << "\n";
-            }
-
-            bool isElementwise = checkIsElementwise(rhsPerms);
-
-            comet_debug() << "Checking if it is mixed mode\n";
-            bool isMixedMode = checkIsMixedMode(rhsFormats);
-
-            comet_debug() << "IsElementWise: " << isElementwise << " isMixedMode: " << isMixedMode << "\n";
-            if (isElementwise && isMixedMode)
-            {
-              comet_debug() << "It is an elementwise multiplication in mixed Mode sparse = sparse * dense\n";
-              if (isMixedMode)
-              {
-                comet_debug() << "It is an mix-mode elementwise multiplication in Mix Mode\n";
-                mixModeEltWiseMultSparseTensorOutputLowering(computeOp,
-                                                             loc,
-                                                             rhsPerms,
-                                                             dimSizes,
-                                                             tensorload_sizes_vec,
-                                                             array_sizes_vec, rewriter);
-              }
-              else
-              {
-                comet_debug() << "It is an pure-sparse elementwise multiplication\n";
-                pureSparseMultSparseTensorOutputLowering<>(op,
-                                                           loc,
-                                                           formats_str,
-                                                           dimSizes,
-                                                           tensorload_sizes_vec,
-                                                           array_sizes_vec,
-                                                           rewriter);
-              }
-            }
-            else
-            {
-              if (!isMixedMode)
-              {
-                comet_debug() << "It is an pure-sparse multiplication or assigment from dense to sparse (produced after workspace transformations)\n";
-                pureSparseMultSparseTensorOutputLowering(op,
-                                                         loc,
-                                                         formats_str,
-                                                         dimSizes,
-                                                         tensorload_sizes_vec,
-                                                         array_sizes_vec,
-                                                         rewriter);
-              }
-              else
-              {
-                /// TODO(gkestor) Mix-mode sparse computation with sparse output not yet supported such as TTM (tensor times matrix)
-                /// TODO(gkestor): if the sparsity patterns is known
-                comet_debug() << "It is an mix mode element-wise multiplication\n";
-                mixModeEltWiseMultSparseTensorOutputLowering(computeOp,
-                                                             loc,
-                                                             rhsPerms,
-                                                             dimSizes,
-                                                             tensorload_sizes_vec,
-                                                             array_sizes_vec, rewriter);
-              }
-            }
-          }
+          // Eventually, there are 2 cases:
+          // Case 1: We can determine apriori the dimension of the sparse tensor
+          //         This is the case if none of the index variables in the output
+          //         tensor are used in a union or a insersect op. In this case we use
+          //         the sparse tensor decleration of the input in order to determine
+          //          the output tensor. We allocate arrays of the same size and then
+          //         insert a ta.SpTensorDeclOp.
+          // Case 2: We can't determine the dimension of the sparse tensor.
+          //         This happens in all other cases. Here we insert a tensor
+          //         that is defined with an (at least one) empty domain. In 
+          //         the lowering process we can either use the symbolic phase
+          //         to determine the allocations needed, or we can perform the
+          //         allocations during the computational phase
+          break;
         }
-        else if (isa<tensorAlgebra::TensorFillFromFileOp>(u))
-        {
-          comet_debug() << " Sparse output is used in TensorFillFromFileOp\n";
-          auto fillfromfileop = cast<tensorAlgebra::TensorFillFromFileOp>(u);
-          /// Can get filename, from "filename" attribute of fillfromfileop
-          rewriter.eraseOp(fillfromfileop);
-        }
-        else if (isa<indexTree::IndexTreeComputeRHSOp>(u))
-        {
-          comet_debug() << "The tensor is in IndexTreeComputeRHSOp, no action taken\n";
-          continue;
-        }
-        else if (isa<tensorAlgebra::PrintOp>(u))
-        {
-          comet_debug() << "The tensor is in print op,  no action taken\n";
-          continue;
-        }
-        else if (isa<tensorAlgebra::ReduceOp>(u))
-        {
-          comet_debug() << "The tensor is in sum op,  no action taken\n";
-          continue;
-        }
-        else if (isa<tensorAlgebra::TensorDimOp>(u))
-        {
-          comet_debug() << "The tensor is in dim op,  no action taken\n";
-          continue;
-        }
-        else
-        {
-          comet_pdump(u);
-          llvm::errs() << __FILE__ << __LINE__ << " tensor is used in the following unsupported op\n";
-        }
-
-        comet_debug() << " Get users after ";
-        /// create sparse tensor construct after lowering each sparse tensor output users
-        comet_debug() << " tensorload_sizes_vec.size(): " << tensorload_sizes_vec.size() << ", rank_size: " << rank_size << "\n";
-        /// create sptensor_construct
-        SmallVector<mlir::Type, 1> elementTypes;
-        for (unsigned int i = 0; i < 4 * rank_size + 1; i++)
-        {
-          assert(tensorload_sizes_vec.size() > 0 && "ERROR: Please report this error to the developers!");
-          comet_debug() << " " << i << " ";
-          comet_vdump(tensorload_sizes_vec[i]);
-          elementTypes.push_back(tensorload_sizes_vec[i].getType());
-        }
-        comet_debug() << "\n ";
-        /// [0 ... 2*rank_size, 2*rank_size+1 ... 4*rank_size+1, 4*rank_size+2 ... 5*rank_size + 1]
-        /// 2d+1 + 2d+1 + d => 5d+2
-        for (unsigned int i = 0; i < 4 * rank_size + 1; i++)
-        {
-          assert(array_sizes_vec.size() > 0 && "ERROR: Please report this error to the developers!");
-          comet_debug() << " " << i << " ";
-          comet_vdump(array_sizes_vec[i]);
-          elementTypes.push_back(array_sizes_vec[i].getType());
-        }
-        comet_debug() << "\n ";
-        for (unsigned int i = 0; i < rank_size; i++)
-        {
-          assert(dimSizes.size() > 0 && "ERROR: Please report this error to the developers!");
-          elementTypes.push_back(dimSizes[i].getType());
-        }
-        comet_debug() << "\n ";
-
-        auto ty = tensorAlgebra::SparseTensorType::get(elementTypes);
-
-        Value sptensor;
-        if (rank_size == 2)
-        {
-          sptensor = rewriter.create<tensorAlgebra::SparseTensorConstructOp>(loc, ty,
-                                                                             ValueRange{
-                                                                                 tensorload_sizes_vec[0], /// A1pos (each dimension consists of pos and crd arrays)
-                                                                                 tensorload_sizes_vec[1], /// A1crd
-                                                                                 tensorload_sizes_vec[2], /// A1tile_pos
-                                                                                 tensorload_sizes_vec[3], /// A1tile_crd
-                                                                                 tensorload_sizes_vec[4], /// A2pos
-                                                                                 tensorload_sizes_vec[5], /// A2crd
-                                                                                 tensorload_sizes_vec[6], /// A2tile_pos
-                                                                                 tensorload_sizes_vec[7], /// A2tile_crd
-                                                                                 tensorload_sizes_vec[8], /// Aval
-                                                                                 array_sizes_vec[0],      /// A1pos_size (size of each pos and crd arrays)
-                                                                                 array_sizes_vec[1],      /// A1crd_size
-                                                                                 array_sizes_vec[2],      /// A1tile_pos_size
-                                                                                 array_sizes_vec[3],      /// A1tile_crd_size
-                                                                                 array_sizes_vec[4],      /// A2pos_size
-                                                                                 array_sizes_vec[5],      /// A2crd_size
-                                                                                 array_sizes_vec[6],      /// A2tile_pos_size
-                                                                                 array_sizes_vec[7],      /// A2tile_crd_size
-                                                                                 array_sizes_vec[8],      /// Aval_size (size of value array)
-                                                                                 dimSizes[0],             /// dim1_size(size of each dimension in sparse tensor)
-                                                                                 dimSizes[1]              /// dim2_size (size of each dimension in sparse tensor)
-                                                                             },
-                                                                             2);
-        }
-        else if (rank_size == 3)
-        {
-          sptensor = rewriter.create<tensorAlgebra::SparseTensorConstructOp>(loc, ty,
-                                                                             ValueRange{
-                                                                                 tensorload_sizes_vec[0],  /// A1pos (each dimension consists of pos and crd arrays)
-                                                                                 tensorload_sizes_vec[1],  /// A1crd
-                                                                                 tensorload_sizes_vec[2],  /// A1tile_pos
-                                                                                 tensorload_sizes_vec[3],  /// A1tile_crd
-                                                                                 tensorload_sizes_vec[4],  /// A2pos
-                                                                                 tensorload_sizes_vec[5],  /// A2crd
-                                                                                 tensorload_sizes_vec[6],  /// A2tile_pos
-                                                                                 tensorload_sizes_vec[7],  /// A2tile_crd
-                                                                                 tensorload_sizes_vec[8],  /// A3pos
-                                                                                 tensorload_sizes_vec[9],  /// A3crd
-                                                                                 tensorload_sizes_vec[10], /// A3tile_pos
-                                                                                 tensorload_sizes_vec[11], /// A3tile_crd
-                                                                                 tensorload_sizes_vec[12], /// Aval
-                                                                                 array_sizes_vec[0],       /// A1pos_size (size of each pos and crd arrays)
-                                                                                 array_sizes_vec[1],       /// A1crd_size
-                                                                                 array_sizes_vec[2],       /// A1tile_pos_size
-                                                                                 array_sizes_vec[3],       /// A1tile_crd_size
-                                                                                 array_sizes_vec[4],       /// A2pos_size
-                                                                                 array_sizes_vec[5],       /// A2crd_size
-                                                                                 array_sizes_vec[6],       /// A2tile_pos_size
-                                                                                 array_sizes_vec[7],       /// A2tile_crd_size
-                                                                                 array_sizes_vec[8],       /// A3pos_size
-                                                                                 array_sizes_vec[9],       /// A3crd_size
-                                                                                 array_sizes_vec[10],      /// A3tile_pos_size
-                                                                                 array_sizes_vec[11],      /// A3tile_crd_size
-                                                                                 array_sizes_vec[12],      /// Aval_size (size of value array)
-                                                                                 dimSizes[0],              /// dim1_size (size of each dimension in sparse tensor)
-                                                                                 dimSizes[1],              /// dim2_size (size of each dimension in sparse tensor)
-                                                                                 dimSizes[2]               /// dim3_size
-                                                                             },
-                                                                             3);
-        }
-        else
-        {
-          llvm::errs() << __FILE__ << ":" << __LINE__ << "ERROR: Not supported format (Tensors of dimensions greater than 3 are currently not supported).\n";
-        }
-
-        comet_debug() << "SparseTensorConstructOp generated for sparse output tensor:\n";
-        comet_vdump(sptensor);
-
-        /// create ta.index_label operation.
-        comet_vdump(op);
-
-        op.replaceAllUsesWith(sptensor);
-        rewriter.replaceOp(op, sptensor);
-      } /// for (auto u : op.getOperation()->getUsers())
+      }
+      op.replaceAllUsesWith(new_tensor);
+      rewriter.replaceOp(op, {new_tensor});
     }
     else
     { /// format == "Dense"
@@ -1040,12 +621,12 @@ namespace
       }
       llvm::ArrayRef<int64_t> cur_memref_arrayref = llvm::ArrayRef<int64_t>(cur_memref);
 
-      MemRefType memrefType2 = MemRefType::get(cur_memref_arrayref, f64Type);
+      MemRefType memrefType2 = MemRefType::get(cur_memref_arrayref, valsType);
       Value alloc_sizes1 = insertAllocAndInitialize(loc, memrefType2, ValueRange(cur_indices), rewriter);
       comet_debug() << " AllocOp: ";
       comet_vdump(alloc_sizes1);
 
-      Value tensorLoad = rewriter.create<ToTensorOp>(loc, alloc_sizes1);
+      Value tensorLoad = rewriter.create<ToTensorOp>(loc, alloc_sizes1, rewriter.getUnitAttr(), rewriter.getUnitAttr());
       comet_vdump(tensorLoad);
 
       op.replaceAllUsesWith(tensorLoad);
@@ -1115,7 +696,7 @@ namespace
 
       cast<memref::AllocOp>(init_alloc.getDefiningOp()).setAlignmentAttr(rewriter.getI64IntegerAttr(32));
 
-      Value tensorLoad = rewriter.create<ToTensorOp>(loc, init_alloc);
+      Value tensorLoad = rewriter.create<ToTensorOp>(loc, init_alloc, rewriter.getUnitAttr(), rewriter.getUnitAttr());
       comet_debug() << " TensorLoad:\n";
       comet_vdump(tensorLoad);
 
@@ -1151,7 +732,6 @@ namespace
       auto function = cast<func::FuncOp>(op->getParentOp());
       auto module = function.getOperation()->getParentOfType<ModuleOp>();
 
-      std::string op_str = dump2str(op);
       bool isOutputTensor = false;
 
       auto loc = op.getLoc();
@@ -1161,10 +741,10 @@ namespace
 
       comet_debug() << " " << op.getNumOperands() << "\n";
       auto res = op.getResult();
-      mlir::TensorType type;
-      if(res.getType().isa<TensorType>())
+      mlir::tensorAlgebra::SparseTensorType type;
+      if(res.getType().isa<SparseTensorType>())
       {
-        type = res.getType().cast<TensorType>();
+        type = res.getType().cast<SparseTensorType>();
       }
       else
       {
@@ -1175,96 +755,47 @@ namespace
       // auto rank_size = op.getNumOperands();
 
       IndexType indexType = IndexType::get(op.getContext());
-      FloatType f64Type = FloatType::getF64(op.getContext());
-      if (VALUETYPE.compare(0, 3, "f32") == 0)
-        f64Type = FloatType::getF32(op.getContext());
+      Type floatEleType = type.getElementType();
+      IntegerType indicesType = type.getIndicesType();
 
       for (auto u1 : op.getOperation()->getUsers())
       {
         comet_debug() << "\nCheck the tensor is input or output\n";
         comet_pdump(u1);
-        if (isa<tensorAlgebra::TensorMultOp>(u1))
+        if (isa<tensorAlgebra::TensorMultOp, tensorAlgebra::TensorElewsMultOp, tensorAlgebra::TransposeOp>(u1))
         {
           comet_debug() << " used in ta.tc op\n";
-          auto p = cast<tensorAlgebra::TensorMultOp>(u1).getOperation();
-          for (unsigned int i = 0; i < p->getNumOperands(); i++)
+          auto p = u1->getOperand(2);
+          if(p == op)
           {
-            /// comet_vdump(n);
-            std::string n_str = dump2str(p->getOperand(i));
-            comet_debug() << "the operands: " << n_str << "\n";
-            if (n_str.compare(0, op_str.size(), op_str) == 0)
-            {
-              comet_debug() << " FIND IT: " << i << "\n";
-              if (i == 2)
-              {
-                isOutputTensor = true;
-              }
-            }
-          }
-        }
-        else if (isa<tensorAlgebra::TensorElewsMultOp>(u1))
-        {
-          comet_debug() << " used in ta.elews_mul op\n";
-          auto p = cast<tensorAlgebra::TensorElewsMultOp>(u1).getOperation();
-          for (unsigned int i = 0; i < p->getNumOperands(); i++)
-          {
-            std::string n_str = dump2str(p->getOperand(i));
-            if (n_str.compare(0, op_str.size(), op_str) == 0)
-            {
-              comet_debug() << " FIND IT: " << i << "\n";
-              if (i == 2)
-              {
-                isOutputTensor = true;
-              }
-            }
+            isOutputTensor = true;
           }
         }
         else if (isa<tensorAlgebra::TensorSetOp>(u1))
         {
           comet_debug() << " used in ta.set op\n";
-          auto p = cast<tensorAlgebra::TensorSetOp>(u1).getOperation();
-          for (unsigned int i = 0; i < p->getNumOperands(); i++)
+          auto p = u1->getOperand(1);
+          if(p == op)
           {
-            comet_debug() << " the " << i << "th operand\n";
-            std::string n_str = dump2str(p->getOperand(i));
-            if (n_str.compare(0, op_str.size(), op_str) == 0)
-            {
-              comet_debug() << " FIND IT: " << i << "\n";
-              if (i == 1)
-              {
-                /// The source tensor of the set op
-                isOutputTensor = true;
-              }
-            }
+            isOutputTensor = true;
           }
         }
-        else if (isa<tensorAlgebra::TransposeOp>(u1))
+        else if (isa<indexTree::IndexTreeLHSOperandOp>(u1))
         {
-          comet_debug() << " used in transpose op\n";
-          auto p = cast<tensorAlgebra::TransposeOp>(u1).getOperation();
-          for (unsigned int i = 0; i < p->getNumOperands(); i++)
-          {
-            std::string n_str = dump2str(p->getOperand(i));
-            if (n_str.compare(0, op_str.size(), op_str) == 0)
-            {
-              comet_debug() << " FIND IT: " << i << "\n";
-              if (i == 2)
-              {
-                /// output of ta.elews_mul
-                isOutputTensor = true;
-              }
-            }
-          }
-        }
-        else if (isa<indexTree::IndexTreeComputeRHSOp>(u1))
-        {
-          comet_debug() << " used in ta.itComputeRHS op\n";
-          isOutputTensor = false;
-        }
-        else if (isa<indexTree::IndexTreeComputeLHSOp>(u1))
-        {
-          comet_debug() << " used in ta.itComputeLHS op\n";
+          comet_debug() << " used in it.LHSOperand op\n";
           isOutputTensor = true;
+        }
+        else if (isa<indexTree::IndexTreeOperandOp>(u1))
+        {
+          comet_debug() << " used in it.Operand op\n";
+        }
+        else if (isa<indexTree::IndexTreeIndexToTensorOp>(u1))
+        {
+          comet_debug() << " used in it.TensorAccess op\n";
+        }
+        else if (isa<indexTree::IndexTreeTensorDomainOp>(u1))
+        {
+          comet_debug() << " used in it.Domain op\n";
         }
         else if (isa<tensorAlgebra::TensorFillFromFileOp>(u1))
         {
@@ -1292,6 +823,30 @@ namespace
         {
           comet_debug() << " the tensor has use in TensorDimOp and this use will be ignored!\n";
         }
+        else if (isa<tensorAlgebra::AllocWorkspaceOp>(u1))
+        {
+          /// do nothing!
+          comet_debug() << " the tensor has use in AllocWorkspaceOp\n";
+        }
+        else if(isa<func::CallOp>(u1))
+        {
+          /// do nothing!
+          comet_debug() << " the tensor has use in func::CallOp\n";
+        }
+        else if(isa<func::ReturnOp>(u1))
+        {
+          comet_debug() << " the tensor has use in func::ReturnOp\n";
+        }
+        else if (isa<indexTree::IndexTreeOp>(u1))
+        {
+          /// do nothing!
+          comet_debug() << " the tensor has use in a Index Tree\n";
+        }
+        else if (isa<tensorAlgebra::SpTensorAliasOp>(u1))
+        {
+          /// do nothing!
+          comet_debug() << " the tensor has use in alias op\n";
+        }
         else
         {
           u1->dump();
@@ -1303,10 +858,10 @@ namespace
 
       /// A1_pos ... A_value
       auto dynamicmemTy_1d_index = MemRefType::get({ShapedType::kDynamic}, indexType); /// memref<?xindex>
-      auto dynamicmemTy_1d_f64 = MemRefType::get({ShapedType::kDynamic}, f64Type);     /// memref<?xf64>
+      auto dynamicmemTy_1d_float = MemRefType::get({ShapedType::kDynamic}, floatEleType);     /// memref<?xfloat>
 
       Type unrankedMemTy_index = UnrankedMemRefType::get(indexType, 0);
-      Type unrankedMemTy_f64 = UnrankedMemRefType::get(f64Type, 0);
+      Type unrankedMemTy_float = UnrankedMemRefType::get(floatEleType, 0);
 
       comet_debug() << " " << formats_str << " isDense: " << isDense(formats_str, ", ") << "\n";
 
@@ -1351,6 +906,13 @@ namespace
         Value alloc_sizes_cast = rewriter.create<memref::CastOp>(loc, unrankedMemTy_index, alloc_sizes);
 
         std::vector<Value> dim_format = mlir::tensorAlgebra::getFormatsValue(formats_str, rank_size, rewriter, loc, indexType);
+        std::vector<TensorFormatEnum> dim_format_int = mlir::tensorAlgebra::getFormats(formats_str, rank_size, ctx);
+        llvm::SmallVector<Attribute, 4> dim_format_attr;
+        for(TensorFormatEnum& format: dim_format_int)
+        {
+          dim_format_attr.push_back(TensorFormatEnumAttr::get(ctx, format));
+        }
+        auto dim_format_attrs = ArrayAttr::get(ctx, ArrayRef(dim_format_attr));
         comet_debug() << " Get the dim_format\n";
 
         /// inform the runtime of what env var to use for parsing input file
@@ -1390,16 +952,20 @@ namespace
         { /// 2D
           comet_debug() << " 2D\n";
           /// Add function definition to the module
-          insertReadFileLibCall(rank_size, ctx, module, function);
+          insertReadFileLibCall(rank_size, floatEleType, indicesType, ctx, module, function);
 
           std::string read_input_sizes_str;
-          if (VALUETYPE.compare(0, 3, "f32") == 0)
+          if (floatEleType.isF32())
           {
             read_input_sizes_str = "read_input_sizes_2D_f32";
           }
-          else
+          else if(floatEleType.isF64())
           {
             read_input_sizes_str = "read_input_sizes_2D_f64";
+          }
+          else 
+          {
+            assert(false && "Unexpected data type");
           }
           auto read_input_sizes_Call = rewriter.create<func::CallOp>(loc, read_input_sizes_str, SmallVector<Type, 2>{},
                                                                      ValueRange{sparseFileID,
@@ -1411,16 +977,21 @@ namespace
         { /// 3D
           comet_debug() << " 3D\n";
           /// Add function definition to the module
-          insertReadFileLibCall(rank_size, ctx, module, function);
+          insertReadFileLibCall(rank_size, floatEleType, indicesType, ctx, module, function);
+
 
           std::string read_input_sizes_str;
-          if (VALUETYPE.compare(0, 3, "f32") == 0)
+          if (floatEleType.isF32())
           {
             read_input_sizes_str = "read_input_sizes_3D_f32";
           }
-          else
-          { /// default f64
+          else if(floatEleType.isF64())
+          {
             read_input_sizes_str = "read_input_sizes_3D_f64";
+          }
+          else 
+          {
+            assert(false && "Unexpected data type");
           }
           auto read_input_sizes_3D_Call = rewriter.create<func::CallOp>(loc, read_input_sizes_str, SmallVector<Type, 2>{},
                                                                         ValueRange{sparseFileID,
@@ -1448,17 +1019,22 @@ namespace
 
         std::vector<Value> alloc_sizes_cast_vec;
         std::vector<Value> alloc_sizes_vec;
+
+        /// A1_pos ... A_value
+        auto dynamicmemTy_1d_indices_type = MemRefType::get({ShapedType::kDynamic}, type.getIndicesType()); /// memref<?xindex>
+        Type unrankedMemTy_indices_type = UnrankedMemRefType::get(type.getIndicesType(), 0);
+      
         for (unsigned int i = 0; i < sp_decl.getDimArrayCount(); i++)
         {
           std::vector<Value> idxes;
           idxes.push_back(array_sizes[i]);
           comet_vdump(array_sizes[i]);
-          Value alloc_size = insertAllocAndInitialize(loc, dynamicmemTy_1d_index, ValueRange{idxes}, rewriter);
+          Value alloc_size = insertAllocAndInitialize(loc, dynamicmemTy_1d_indices_type, ValueRange{idxes}, rewriter);
           comet_debug() << " ";
           comet_vdump(alloc_size);
 
           alloc_sizes_vec.push_back(alloc_size);
-          Value alloc_size_cast = rewriter.create<memref::CastOp>(loc, unrankedMemTy_index, alloc_size);
+          Value alloc_size_cast = rewriter.create<memref::CastOp>(loc, unrankedMemTy_indices_type, alloc_size);
           alloc_sizes_cast_vec.push_back(alloc_size_cast);
         }
 
@@ -1466,11 +1042,11 @@ namespace
         {
           std::vector<Value> idxes;
           idxes.push_back(array_sizes[i]);
-          Value alloc_size = insertAllocAndInitialize(loc, dynamicmemTy_1d_f64, ValueRange{idxes}, rewriter);
+          Value alloc_size = insertAllocAndInitialize(loc, dynamicmemTy_1d_float, ValueRange{idxes}, rewriter);
           comet_debug() << " ";
           comet_vdump(alloc_size);
           alloc_sizes_vec.push_back(alloc_size);
-          Value alloc_size_cast = rewriter.create<memref::CastOp>(loc, unrankedMemTy_f64, alloc_size);
+          Value alloc_size_cast = rewriter.create<memref::CastOp>(loc, unrankedMemTy_float, alloc_size);
           alloc_sizes_cast_vec.push_back(alloc_size_cast);
         }
 
@@ -1478,14 +1054,22 @@ namespace
         if (rank_size == 2)
         { /// 2D
           std::string read_input_str;
-          if (VALUETYPE.compare(0, 3, "f32") == 0)
+          
+          if (floatEleType.isF32())
           {
             read_input_str = "read_input_2D_f32";
           }
-          else
+          else if (floatEleType.isF64())
           {
             read_input_str = "read_input_2D_f64";
           }
+          else 
+          {
+            assert(false && "Unexpected type");
+          }
+
+          read_input_str += "_i"+std::to_string(indicesType.getWidth());
+
           auto read_input_f64Call = rewriter.create<func::CallOp>(loc, read_input_str, SmallVector<Type, 2>{},
                                                                   ValueRange{sparseFileID,
                                                                              dim_format[0], dim_format[1], /// A1_format, A1_tile_format
@@ -1504,14 +1088,17 @@ namespace
         else if (rank_size == 3)
         { /// 3D
           std::string read_input_str;
-          if (VALUETYPE.compare(0, 3, "f32") == 0)
+          if (floatEleType.isF32())
           {
             read_input_str = "read_input_3D_f32";
           }
-          else
+          else if (floatEleType.isF64())
           {
             read_input_str = "read_input_3D_f64";
           }
+
+          read_input_str += "_i"+std::to_string(indicesType.getWidth());
+
           auto read_input_f64Call = rewriter.create<func::CallOp>(loc, read_input_str, SmallVector<Type, 2>{},
                                                                   ValueRange{sparseFileID,
                                                                              dim_format[0], dim_format[1],                       /// A1, A1_tile
@@ -1535,43 +1122,65 @@ namespace
         std::vector<Value> alloc_tensor_vec;
         for (unsigned int i = 0; i < sp_decl.getTotalArrayCount(); i++)
         {
-          Value tensorLoad = rewriter.create<ToTensorOp>(loc, alloc_sizes_vec[i]);
+          Value tensorLoad = rewriter.create<ToTensorOp>(loc, alloc_sizes_vec[i], rewriter.getUnitAttr(), rewriter.getUnitAttr());
           alloc_tensor_vec.push_back(tensorLoad);
         }
 
-        /// create sptensor_construct
-        SmallVector<mlir::Type, 1> elementTypes;
-        for (unsigned int i = 0; i < sp_decl.getTotalArrayCount(); i++)
-        {
-          elementTypes.push_back(alloc_tensor_vec[i].getType());
-        }
-        for (unsigned int i = 0; i < 5 * rank_size + 1; i++)
-        {
-          elementTypes.push_back(array_sizes[i].getType());
-        }
-
-        auto ty = tensorAlgebra::SparseTensorType::get(elementTypes);
+        llvm::SmallVector<int64_t> dim_sizes(rank_size, ShapedType::kDynamic); // TODO: Determine sizes!!!!
+        auto ty = op.getResult().getType();
 
         Value sptensor;
         if (rank_size == 2)
         {
-          sptensor = rewriter.create<tensorAlgebra::SparseTensorConstructOp>(loc, ty, ValueRange{alloc_tensor_vec[0], alloc_tensor_vec[1], /// A1
-                                                                                                 alloc_tensor_vec[2], alloc_tensor_vec[3], /// A1_tile
-                                                                                                 alloc_tensor_vec[4], alloc_tensor_vec[5], /// A2
-                                                                                                 alloc_tensor_vec[6], alloc_tensor_vec[7], /// A2_tile
-                                                                                                 alloc_tensor_vec[8], array_sizes[0], array_sizes[1], array_sizes[2], array_sizes[3], array_sizes[4], array_sizes[5], array_sizes[6], array_sizes[7], array_sizes[8], array_sizes[9], array_sizes[10]},
-                                                                             2);
+          Value dims = rewriter.create<tensor::FromElementsOp>(loc, ValueRange{array_sizes[9], array_sizes[10]});
+          sptensor = rewriter.create<tensorAlgebra::SparseTensorConstructOp>(loc, ty, 
+                                                                                                dims, /// Dim sizes
+                                                                                                ValueRange{
+                                                                                                  alloc_tensor_vec[0], // A1_pos
+                                                                                                  alloc_tensor_vec[4], /// A2_pos
+                                                                                                },
+                                                                                                ValueRange{
+                                                                                                  alloc_tensor_vec[1], /// A1_crd
+                                                                                                  alloc_tensor_vec[5], /// A2_crd
+                                                                                                },
+                                                                                                ValueRange{
+                                                                                                  alloc_tensor_vec[2], /// A1_tile_pos
+                                                                                                  alloc_tensor_vec[6], /// A2_tile_pos
+                                                                                                },
+                                                                                                ValueRange{
+                                                                                                  alloc_tensor_vec[3], /// A1_tile_crd
+                                                                                                  alloc_tensor_vec[7], /// A2_tile_crd
+                                                                                                },
+                                                                                                alloc_tensor_vec[8], /// Avals
+                                                                             2, dim_format_attrs);
         }
         else if (rank_size == 3)
         {
-          sptensor = rewriter.create<tensorAlgebra::SparseTensorConstructOp>(loc, ty, ValueRange{alloc_tensor_vec[0], alloc_tensor_vec[1],   /// A1
-                                                                                                 alloc_tensor_vec[2], alloc_tensor_vec[3],   /// A1_tile
-                                                                                                 alloc_tensor_vec[4], alloc_tensor_vec[5],   /// A2
-                                                                                                 alloc_tensor_vec[6], alloc_tensor_vec[7],   /// A2_tile
-                                                                                                 alloc_tensor_vec[8], alloc_tensor_vec[9],   /// A3
-                                                                                                 alloc_tensor_vec[10], alloc_tensor_vec[11], /// A3_tile
-                                                                                                 alloc_tensor_vec[12], array_sizes[0], array_sizes[1], array_sizes[2], array_sizes[3], array_sizes[4], array_sizes[5], array_sizes[6], array_sizes[7], array_sizes[8], array_sizes[9], array_sizes[10], array_sizes[11], array_sizes[12], array_sizes[13], array_sizes[14], array_sizes[15], array_sizes[16], array_sizes[17], array_sizes[18]},
-                                                                             3);
+          Value dims = rewriter.create<tensor::FromElementsOp>(loc, ValueRange{array_sizes[16], array_sizes[17], array_sizes[18]});
+
+          sptensor = rewriter.create<tensorAlgebra::SparseTensorConstructOp>(loc, ty, dims,
+                                                                                      ValueRange {
+                                                                                        alloc_tensor_vec[0], /// A1_pos
+                                                                                        alloc_tensor_vec[4],   /// A2_pos
+                                                                                        alloc_tensor_vec[8],   /// A3_pos
+                                                                                      },
+                                                                                      ValueRange {
+                                                                                        alloc_tensor_vec[1],   /// A1_crd
+                                                                                        alloc_tensor_vec[5],   /// A2_crd
+                                                                                        alloc_tensor_vec[9],   /// A3_crd
+                                                                                      },
+                                                                                      ValueRange {
+                                                                                        alloc_tensor_vec[2],   /// A1_tile_pos
+                                                                                        alloc_tensor_vec[6],   /// A2_tile_pos
+                                                                                        alloc_tensor_vec[10], /// A3_tile_pos
+                                                                                      },
+                                                                                      ValueRange {
+                                                                                        alloc_tensor_vec[3],   /// A1_tile_crd
+                                                                                        alloc_tensor_vec[7],   /// A2_tile_crd
+                                                                                        alloc_tensor_vec[11], /// A3_tile_crd
+                                                                                      },
+                                                                                      alloc_tensor_vec[12], /// Avals
+                                                                             3, dim_format_attrs);
         }
         else
         {
@@ -1688,6 +1297,7 @@ namespace
                              memref::MemRefDialect,
                              scf::SCFDialect,
                              bufferization::BufferizationDialect,
+                             linalg::LinalgDialect,
                              IndexTreeDialect>();
 
       target.addLegalOp<tensorAlgebra::PrintOp,
@@ -1699,9 +1309,15 @@ namespace
                         tensorAlgebra::TensorSetOp,
                         tensorAlgebra::SparseOutputTensorDeclOp,
                         tensorAlgebra::TempSparseOutputTensorDeclOp,
+                        tensorAlgebra::TensorMultOp,
                         tensorAlgebra::IndexLabelOp,
                         tensorAlgebra::ScalarOp,
-                        tensorAlgebra::SparseTensorConstructOp>();
+                        tensorAlgebra::SparseTensorConstructOp,
+                        tensorAlgebra::SpTensorAliasOp,
+                        tensorAlgebra::SpTensorGetDimPos,
+                        tensorAlgebra::SpTensorGetDimCrd,
+                        tensorAlgebra::SpTensorGetVals,
+                        tensorAlgebra::SpTensorGetDimSize>();
 
       if (failed(applyPartialConversion(function, target, std::move(patterns))))
       {
@@ -1731,6 +1347,7 @@ namespace
                              scf::SCFDialect,
                              mlir::memref::MemRefDialect,
                              IndexTreeDialect,
+                             tensor::TensorDialect,
                              bufferization::BufferizationDialect>();
 
       target.addLegalOp<tensorAlgebra::PrintOp,
@@ -1778,6 +1395,7 @@ namespace
                              scf::SCFDialect,
                              mlir::memref::MemRefDialect,
                              IndexTreeDialect,
+                             tensor::TensorDialect,
                              bufferization::BufferizationDialect>();
 
       target.addIllegalDialect<TADialect>();
@@ -1794,7 +1412,14 @@ namespace
                         tensorAlgebra::IndexLabelOp,
                         tensorAlgebra::DenseConstantOp,
                         tensorAlgebra::TensorDimOp,
+                        tensorAlgebra::SpTensorAliasOp,
+                        tensorAlgebra::SpTensorGetDimCrd,
+                        tensorAlgebra::SpTensorGetDimPos,
+                        tensorAlgebra::SpTensorGetDimSize,
+                        tensorAlgebra::SpTensorGetVals,
                         tensorAlgebra::ScalarOp,
+                        tensorAlgebra::AllocWorkspaceOp,
+                        tensorAlgebra::TensorMultOp, // Should this be dynamically legal to only work with dense tensors?
                         func::CallOp>();
 
       if (failed(applyPartialConversion(function, target, std::move(patterns))))
@@ -1829,6 +1454,7 @@ namespace
                              scf::SCFDialect,
                              mlir::memref::MemRefDialect,
                              IndexTreeDialect,
+                             tensor::TensorDialect,
                              bufferization::BufferizationDialect>();
 
       target.addIllegalDialect<TADialect>();
@@ -1845,6 +1471,13 @@ namespace
                         tensorAlgebra::DenseConstantOp,
                         tensorAlgebra::TensorDimOp,
                         tensorAlgebra::ScalarOp,
+                        tensorAlgebra::AllocWorkspaceOp,
+                        tensorAlgebra::SpTensorAliasOp,
+                        tensorAlgebra::SpTensorGetDimCrd,
+                        tensorAlgebra::SpTensorGetDimPos,
+                        tensorAlgebra::SpTensorGetDimSize,
+                        tensorAlgebra::SpTensorGetVals,
+                        tensorAlgebra::TensorMultOp, // Should this be dynamically legal to only work with dense tensors?
                         func::CallOp>();
 
       if (failed(applyPartialConversion(function, target, std::move(patterns))))

@@ -28,12 +28,21 @@
 #include "comet/Dialect/Utils/Utils.h"
 #include "comet/Conversion/TensorAlgebraToSCF/TensorAlgebraToSCF.h"
 #include "comet/Dialect/TensorAlgebra/Passes.h"
+#include "comet/Dialect/IndexTree/IR/IndexTreeDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/ValueRange.h"
+#include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/SmallVector.h"
+#include <string>
 
 using namespace mlir;
 using namespace mlir::arith;
@@ -173,7 +182,7 @@ namespace
       }
 
       /// Replace this operation with the generated alloc.
-      op->replaceAllUsesWith(rewriter.create<ToTensorOp>(op->getLoc(),alloc));
+      op->replaceAllUsesWith(rewriter.create<ToTensorOp>(op->getLoc(), alloc, rewriter.getUnitAttr(), rewriter.getUnitAttr()));
       rewriter.eraseOp(op);
       comet_debug() << "ConstantOpLowering ends\n";
       return success();
@@ -205,6 +214,7 @@ namespace
       comet_vdump(op);
       auto *ctx = op->getContext();
       auto inputType = op->getOperand(0).getType();
+      auto  inputTensor = op->getOperand(0);
 
       /// Get tensor contraction expression through analyzing the index map
       ArrayAttr indexMaps = op.getIndexingMaps();
@@ -219,8 +229,9 @@ namespace
       { /// for dense
         comet_debug() << "Dense transpose\n";
 
-        auto inputTensorLoadOp = cast<ToTensorOp>(op->getOperand(0).getDefiningOp());
-        auto inputMemref = inputTensorLoadOp.getMemref();
+        
+        // auto inputTensorLoadOp = cast<ToTensorOp>(op->getOperand(0).getDefiningOp());
+        // auto inputMemref = inputTensorLoadOp.getMemref();
 
         for (auto u : op.getOperation()->getResult(0).getUsers())
         {
@@ -233,16 +244,13 @@ namespace
         }
 
         comet_vdump(lhs);
-        auto outputMemref = lhs.getDefiningOp()->getOperand(0);
-        rewriter.create<linalg::TransposeOp>(loc, inputMemref, outputMemref, llvm::ArrayRef<int64_t>(allPerms[1]));
-        Value res_value = rewriter.create<ToTensorOp>(loc, outputMemref);
-
-        op.replaceAllUsesWith(res_value);
-        rewriter.eraseOp(op);
-
+        // auto outputMemref = lhs.getDefiningOp()->getOperand(0);
+        auto la_transpose = rewriter.create<linalg::TransposeOp>(loc, inputTensor, lhs, llvm::ArrayRef<int64_t>(allPerms[1]));
+        // Value res_value = rewriter.create<ToTensorOp>(loc, outputMemref, rewriter.getUnitAttr(), rewriter.getUnitAttr());
+        rewriter.replaceOp(op, la_transpose.getResults());
         return success();
       }
-      else
+      else if(auto spType = mlir::dyn_cast<SparseTensorType>(inputType))
       { /// for sparse tensors
         int64_t pnum[2];
         /// print allPerms
@@ -258,13 +266,13 @@ namespace
         std::string formats_strOut(opFormatsArrayAttr[1].cast<mlir::StringAttr>().getValue());
         IntegerType i32Type = IntegerType::get(ctx, 32);
         IndexType indexType = IndexType::get(ctx);
-        FloatType f64Type = FloatType::getF64(ctx);
 
         Value input_perm_num = rewriter.create<ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(pnum[0]));
         Value output_perm_num = rewriter.create<ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(pnum[1]));
 
-        Type unrankedMemrefType_f64 = UnrankedMemRefType::get(f64Type, 0);
+        UnrankedMemRefType unrankedMemrefType_float = UnrankedMemRefType::get(spType.getElementType(), 0);
         Type unrankedMemrefType_index = UnrankedMemRefType::get(indexType, 0);
+        Type unrankedMemrefType_indices_type = UnrankedMemRefType::get(spType.getIndicesType(), 0);
 
         mlir::func::FuncOp transpose_func; /// runtime call
 
@@ -284,50 +292,52 @@ namespace
 
         for (unsigned int n = 0; n < tensors_num; n++)
         {
-          auto tensor_rank_attr = tensors[n].getDefiningOp()->getAttr("tensor_rank");
-          auto tensor_rank_int_attr = cast<IntegerAttr>(tensor_rank_attr);
-          unsigned int tensor_rank = tensor_rank_int_attr.getValue().getLimitedValue();
+          auto tensor_rank = tensors[n].getType().cast<ShapedType>().getRank();
           comet_debug() << "ATTR_Val: " << tensor_rank << "\n";
 
           comet_debug() << " tensor_rank: " << tensor_rank << "\n";
           comet_debug() << " tensor[n]: "
                         << "\n";
           comet_pdump(tensors[n].getDefiningOp());
-
-          for (unsigned int i = 0; i < 4 * tensor_rank + 1; i++)
+          auto tensor = tensors[n];
+          auto tensor_type = tensors[n].getType().cast<SparseTensorType>();
+          for(int i = 0; i < tensor_rank; i++)
           {
-            auto tensorload_op = tensors[n].getDefiningOp()->getOperand(i);
-            comet_debug() << " tensorload_op "
-                          << "\n";
-            comet_vdump(tensorload_op);
+            Value pos = rewriter.create<SpTensorGetDimPos>(loc, tensor, rewriter.getI32IntegerAttr(i));
+            ShapedType shape = pos.getType().cast<ShapedType>();
+            Value pos_memref = rewriter.create<bufferization::ToMemrefOp>(loc, MemRefType::get(shape.getShape(), shape.getElementType()), pos);
+            Value pos_v = rewriter.create<memref::CastOp>(loc, unrankedMemrefType_indices_type, pos_memref);
+            alloc_sizes_cast_vecs[n].push_back(pos_v);
 
-            auto alloc_op = tensorload_op.getDefiningOp()->getOperand(0);
-            comet_debug() << " alloc_op "
-                          << "\n";
-            comet_vdump(alloc_op);
-
-            if (i < 4 * tensor_rank)
-            {
-              /// indexes crd's
-              mlir::Value v = rewriter.create<memref::CastOp>(loc, unrankedMemrefType_index, alloc_op);
-              alloc_sizes_cast_vecs[n].push_back(v);
-            }
-            else
-            {
-              /// NNZ vals
-              mlir::Value v = rewriter.create<memref::CastOp>(loc, unrankedMemrefType_f64, alloc_op);
-              alloc_sizes_cast_vecs[n].push_back(v);
-            }
+            mlir::Value crd = rewriter.create<SpTensorGetDimCrd>(loc, tensor, rewriter.getI32IntegerAttr(i));
+            mlir::Value crd_memref = rewriter.create<bufferization::ToMemrefOp>(loc, MemRefType::get(shape.getShape(), shape.getElementType()), crd);
+            mlir::Value crd_v = rewriter.create<memref::CastOp>(loc, unrankedMemrefType_indices_type, crd_memref);
+            alloc_sizes_cast_vecs[n].push_back(crd_v);
+            
+            Value block_pos = rewriter.create<SpTensorGetDimBlockPos>(loc, tensor, rewriter.getI32IntegerAttr(i));
+            Value block_pos_memref = rewriter.create<bufferization::ToMemrefOp>(loc, MemRefType::get(shape.getShape(), shape.getElementType()), block_pos);
+            Value block_pos_v = rewriter.create<memref::CastOp>(loc, unrankedMemrefType_indices_type, block_pos_memref);
+            alloc_sizes_cast_vecs[n].push_back(block_pos_v);
+            
+            mlir::Value block_crd = rewriter.create<SpTensorGetDimBlockCrd>(loc, tensor, rewriter.getI32IntegerAttr(i));
+            mlir::Value block_crd_memref = rewriter.create<bufferization::ToMemrefOp>(loc, MemRefType::get(shape.getShape(), shape.getElementType()), block_crd);
+            mlir::Value block_crd_v = rewriter.create<memref::CastOp>(loc, unrankedMemrefType_indices_type, block_crd_memref);
+            alloc_sizes_cast_vecs[n].push_back(block_crd_v);
           }
+          Value vals = rewriter.create<SpTensorGetVals>(loc, tensor);
+          Value vals_memref = rewriter.create<bufferization::ToMemrefOp>(loc, MemRefType::get({ShapedType::kDynamic}, tensor_type.getElementType()), vals);
+          Value vals_v = rewriter.create<memref::CastOp>(loc, unrankedMemrefType_float, vals_memref);
+          alloc_sizes_cast_vecs[n].push_back(vals_v);
 
-          auto memrefload_op = tensors[n].getDefiningOp()->getOperand(tensors[n].getDefiningOp()->getNumOperands() - 1);
-          allocs_for_sparse_tensors[n].push_back(memrefload_op);
+          auto dims_tensor = mlir::cast<SparseTensorConstructOp>(tensors[n].getDefiningOp()).getDims();
+          auto dims_memref = rewriter.create<ToMemrefOp>(loc, MemRefType::get(dims_tensor.getType().getShape(), dims_tensor.getType().getElementType()), dims_tensor);
+          allocs_for_sparse_tensors[n].push_back(dims_memref);
           comet_debug() << " memrefload_op "
                         << "\n";
           comet_vdump(memrefload_op);
         }
 
-        Value last_dim_size_alloc = allocs_for_sparse_tensors[0][0].getDefiningOp()->getOperand(0);
+        Value last_dim_size_alloc = allocs_for_sparse_tensors[0][0];
         comet_debug() << "Alloc for last dim size:\n";
         comet_vdump(last_dim_size_alloc);
 
@@ -339,6 +349,7 @@ namespace
         auto tensor_rank_int_attr = cast<IntegerAttr>(tensor_rank_attr);
         unsigned int rank_size = tensor_rank_int_attr.getValue().getLimitedValue();
         comet_debug() << "ATTR_Val: Rank_size: " << rank_size << "\n";
+        assert(rank_size <= 3 && rank_size >=2 && "Rank size not supported");
 
         /// dim format of input tensor
         std::vector<Value>
@@ -347,120 +358,57 @@ namespace
         /// dim format of output tensor
         std::vector<Value>
             dim_formatOut = mlir::tensorAlgebra::getFormatsValueInt(formats_strOut, rank_size, rewriter, loc, i32Type);
-
-        if (rank_size == 2)
-        { /// 2D
-          auto transpose2DF64Func = FunctionType::get(ctx,
-                                                      {i32Type, i32Type, i32Type, i32Type,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_f64,
-                                                       i32Type, i32Type, i32Type, i32Type,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_f64,
-                                                       unrankedMemrefType_index},
-                                                      {});
-
-          std::string func_name = "transpose_2D_f64";
-          if (!hasFuncDeclaration(module, func_name))
-          {
-            transpose_func = mlir::func::FuncOp::create(loc, func_name, transpose2DF64Func, ArrayRef<NamedAttribute>{});
-            transpose_func.setPrivate();
-            module.push_back(transpose_func);
-          }
-          comet_debug() << "alloc_sizes_vec: " << alloc_sizes_cast_vecs.size() << "\n";
-          comet_debug() << "alloc_sizes_vec[0]: " << alloc_sizes_cast_vecs[0].size() << "\n";
-          comet_debug() << "alloc_sizes_vec[1]: " << alloc_sizes_cast_vecs[1].size() << "\n";
-          comet_debug() << "dim_formatIn: " << dim_formatIn.size() << "\n";
-          comet_debug() << "dim_formatOut: " << dim_formatOut.size() << "\n";
-
-          rewriter.create<func::CallOp>(loc, func_name, SmallVector<Type, 2>{},
-                                        ValueRange{dim_formatIn[0], dim_formatIn[1], dim_formatIn[2], dim_formatIn[3],
-                                                   alloc_sizes_cast_vecs[0][0], alloc_sizes_cast_vecs[0][1],
-                                                   alloc_sizes_cast_vecs[0][2], alloc_sizes_cast_vecs[0][3],
-                                                   alloc_sizes_cast_vecs[0][4], alloc_sizes_cast_vecs[0][5],
-                                                   alloc_sizes_cast_vecs[0][6], alloc_sizes_cast_vecs[0][7],
-                                                   alloc_sizes_cast_vecs[0][8],
-                                                   dim_formatOut[0], dim_formatOut[1], dim_formatOut[2], dim_formatOut[3],
-                                                   alloc_sizes_cast_vecs[1][0], alloc_sizes_cast_vecs[1][1],
-                                                   alloc_sizes_cast_vecs[1][2], alloc_sizes_cast_vecs[1][3],
-                                                   alloc_sizes_cast_vecs[1][4], alloc_sizes_cast_vecs[1][5],
-                                                   alloc_sizes_cast_vecs[1][6], alloc_sizes_cast_vecs[1][7],
-                                                   alloc_sizes_cast_vecs[1][8],
-                                                   sparse_tensor_desc});
-        }
-        else if (rank_size == 3)
-        { /// 3D
-          auto transpose3DF64Func = FunctionType::get(ctx,
-                                                      {i32Type, i32Type,
-                                                       i32Type, i32Type,
-                                                       i32Type, i32Type,
-                                                       i32Type, i32Type,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_f64,
-                                                       i32Type, i32Type,
-                                                       i32Type, i32Type,
-                                                       i32Type, i32Type,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_index, unrankedMemrefType_index,
-                                                       unrankedMemrefType_f64,
-                                                       unrankedMemrefType_index},
-                                                      {});
-
-          std::string func_name = "transpose_3D_f64";
-          if (!hasFuncDeclaration(module, func_name))
-          {
-            transpose_func = mlir::func::FuncOp::create(loc, func_name, transpose3DF64Func, ArrayRef<NamedAttribute>{});
-            transpose_func.setPrivate();
-            module.push_back(transpose_func);
-          }
-
-          rewriter.create<func::CallOp>(loc, func_name, SmallVector<Type, 2>{},
-                                        ValueRange{input_perm_num, output_perm_num,
-                                                   dim_formatIn[0], dim_formatIn[1], dim_formatIn[2],
-                                                   dim_formatIn[3], dim_formatIn[4], dim_formatIn[5],
-                                                   alloc_sizes_cast_vecs[0][0], alloc_sizes_cast_vecs[0][1],
-                                                   alloc_sizes_cast_vecs[0][2], alloc_sizes_cast_vecs[0][3],
-                                                   alloc_sizes_cast_vecs[0][4], alloc_sizes_cast_vecs[0][5],
-                                                   alloc_sizes_cast_vecs[0][6], alloc_sizes_cast_vecs[0][7],
-                                                   alloc_sizes_cast_vecs[0][8], alloc_sizes_cast_vecs[0][9],
-                                                   alloc_sizes_cast_vecs[0][10], alloc_sizes_cast_vecs[0][11],
-                                                   alloc_sizes_cast_vecs[0][12],
-                                                   dim_formatOut[0], dim_formatOut[1], dim_formatOut[2],
-                                                   dim_formatOut[3], dim_formatOut[4], dim_formatOut[5],
-                                                   alloc_sizes_cast_vecs[1][0], alloc_sizes_cast_vecs[1][1],
-                                                   alloc_sizes_cast_vecs[1][2], alloc_sizes_cast_vecs[1][3],
-                                                   alloc_sizes_cast_vecs[1][4], alloc_sizes_cast_vecs[1][5],
-                                                   alloc_sizes_cast_vecs[1][6], alloc_sizes_cast_vecs[1][7],
-                                                   alloc_sizes_cast_vecs[1][8], alloc_sizes_cast_vecs[1][9],
-                                                   alloc_sizes_cast_vecs[1][10], alloc_sizes_cast_vecs[1][11],
-                                                   alloc_sizes_cast_vecs[1][12],
-                                                   sparse_tensor_desc});
-        }
-        else
+        std::string func_name = "transpose_" + std::to_string(rank_size)+ "D" + "_" + "f" + std::to_string(unrankedMemrefType_float.getElementType().getIntOrFloatBitWidth()) + "_i"+std::to_string(spType.getIndicesType().getWidth());
+        llvm::SmallVector<Type, 28> funcArgTypes;
+        if( rank_size == 3)
         {
-          llvm::errs() << "ERROR: Tensors greater than 3 are not currently supported.\n";
+          funcArgTypes.push_back(i32Type);
+          funcArgTypes.push_back(i32Type);
         }
+        for(int k = 0; k < 2; k++)
+        {
+          for(unsigned i = 0; i < rank_size * 2; i++)
+          { 
+            funcArgTypes.push_back(i32Type);
+          }
+          for(unsigned i = 0; i < rank_size * 4; i++)
+          {
+            funcArgTypes.push_back(unrankedMemrefType_indices_type);
+          }
+          funcArgTypes.push_back(unrankedMemrefType_float);
+        }
+        funcArgTypes.push_back(unrankedMemrefType_index);
+        auto transposeFunc = FunctionType::get(ctx, TypeRange(funcArgTypes), {});
+        if (!hasFuncDeclaration(module, func_name))
+        {
+          transpose_func = mlir::func::FuncOp::create(loc, func_name, transposeFunc, ArrayRef<NamedAttribute>{});
+          transpose_func.setPrivate();
+          module.push_back(transpose_func);
+        }
+        
+        std::vector<Value> allInputs;
+        if(rank_size == 3)
+        {
+          allInputs.push_back(input_perm_num);
+          allInputs.push_back(output_perm_num);
+        }
+        allInputs.insert(allInputs.end(), dim_formatIn.begin(), dim_formatIn.end());
+        allInputs.insert(allInputs.end(), alloc_sizes_cast_vecs[0].begin(), alloc_sizes_cast_vecs[0].end());
+        allInputs.insert(allInputs.end(), dim_formatOut.begin(), dim_formatOut.end());
+        allInputs.insert(allInputs.end(), alloc_sizes_cast_vecs[1].begin(), alloc_sizes_cast_vecs[1].end());
+        allInputs.push_back(sparse_tensor_desc);
+        
+        rewriter.create<func::CallOp>(loc, func_name, SmallVector<Type, 2>{}, ValueRange(allInputs) );
 
         rewriter.eraseOp(setOp);
         rewriter.eraseOp(op);
         return success();
 
       } /// end else sparse tensor
+      else 
+      {
+        return failure();
+      }
     }   /// Tensor TransposeLowering
   };
 
@@ -478,16 +426,31 @@ namespace
       comet_debug() << "Lowering Reduce operation to SCF\n";
 
       Location loc = op.getLoc();
-      auto f64Type = rewriter.getF64Type();
+      // auto f64Type = rewriter.getF64Type();
       auto inputType = op->getOperand(0).getType();
 
       /// Allocate memory for the result and initialized it
       auto cst_zero = rewriter.create<ConstantIndexOp>(loc, 0); /// need to access res alloc
-      MemRefType memTy_alloc_res = MemRefType::get({1}, f64Type);
+      ShapedType shapeT = mlir::cast<ShapedType>(inputType);
+      MemRefType memTy_alloc_res = MemRefType::get({1}, shapeT.getElementType());
+
       Value res = rewriter.create<memref::AllocOp>(loc, memTy_alloc_res);
-      Value const_f64_0 = rewriter.create<ConstantOp>(loc, f64Type, rewriter.getF64FloatAttr(0));
+      FloatAttr zero;
+      if(shapeT.getElementType().isF32())
+      {
+        zero = rewriter.getF32FloatAttr(0);
+      }
+      else if(shapeT.getElementType().isF64())
+      {
+        zero = rewriter.getF64FloatAttr(0);
+      }
+      else 
+      {
+        assert(false && "Unexpected type");
+      }
+      Value const_float_0 = rewriter.create<ConstantOp>(loc, shapeT.getElementType(), zero);
       std::vector<Value> alloc_zero_loc = {cst_zero};
-      rewriter.create<memref::StoreOp>(loc, const_f64_0,
+      rewriter.create<memref::StoreOp>(loc, const_float_0,
                                        res, alloc_zero_loc);
 
       comet_vdump(res);
@@ -496,30 +459,16 @@ namespace
       { /// tensor is dense
         comet_debug() << "Input Tensor is dense\n";
         std::vector<Value> indices;
-        auto alloc_op = op->getOperand(0).getDefiningOp()->getOperand(0);
 
         comet_vdump(alloc_op);
+        auto lowerBound = rewriter.create<ConstantIndexOp>(loc, 0);
+        auto step = rewriter.create<ConstantIndexOp>(loc, 1);
+
 
         for (unsigned rank = 0; rank < inputType.cast<mlir::TensorType>().getRank(); rank++)
         {
-          auto dimSize = inputType.cast<mlir::TensorType>().getDimSize(rank);
-          Value upperBound;
-          if (dimSize == ShapedType::kDynamic)
-          {
-            comet_debug() << " This dimension is a dynamic size\n";
-
-            comet_vdump(alloc_op);
-            auto memRefType = alloc_op.getType().dyn_cast<MemRefType>();
-            unsigned dynamicDimPos = memRefType.getDynamicDimIndex(rank);
-            comet_debug() << " dynamicDimPos: " << dynamicDimPos << "\n";
-            upperBound = alloc_op.getDefiningOp()->getOperand(dynamicDimPos);
-          }
-          else
-          {
-            upperBound = rewriter.create<ConstantIndexOp>(loc, dimSize);
-          }
-          auto lowerBound = rewriter.create<ConstantIndexOp>(loc, 0);
-          auto step = rewriter.create<ConstantIndexOp>(loc, 1);
+          Value upperBound = rewriter.create<tensor::DimOp>(loc, op->getOperand(0), rank);
+          
           /// create for loops
           auto loop = rewriter.create<scf::ForOp>(loc, lowerBound, upperBound, step);
           indices.push_back(loop.getInductionVar());
@@ -527,58 +476,25 @@ namespace
         }
 
         /// Build loop body
-        auto load_rhs = rewriter.create<memref::LoadOp>(loc, alloc_op, indices);
+        auto load_rhs = rewriter.create<tensor::ExtractOp>(loc, op->getOperand(0), indices);
         auto res_load = rewriter.create<memref::LoadOp>(loc, res, alloc_zero_loc);
         auto reduced = rewriter.create<AddFOp>(loc, load_rhs, res_load);
         rewriter.create<memref::StoreOp>(loc, reduced, res, alloc_zero_loc);
       }
       else
       { /// sparse tensor type
-        assert(inputType.isa<SparseTensorType>());
+        SparseTensorType sp_tensor_type = inputType.cast<SparseTensorType>();
         comet_debug() << "Input Tensor is sparse\n";
 
         comet_pdump(op);
-        assert(isa<tensorAlgebra::SparseTensorConstructOp>(op->getOperand(0).getDefiningOp()));
-        tensorAlgebra::SparseTensorConstructOp sp_op = cast<tensorAlgebra::SparseTensorConstructOp>(op->getOperand(0).getDefiningOp());
 
-        int tensorRanks = sp_op.getTensorRank();
+        int tensorRanks = sp_tensor_type.getRank();
         comet_debug() << " tensorRank: " << tensorRanks << " \n";
         comet_debug() << "Tensor to reduce:\n";
         comet_pdump(op->getOperand(0).getDefiningOp());
+        Value sp_tensor_values = rewriter.create<tensorAlgebra::SpTensorGetVals>(loc, RankedTensorType::get({ShapedType::kDynamic,}, sp_tensor_type.getElementType()), op->getOperand(0));
+        Value upperBound = rewriter.create<tensor::DimOp>(loc, sp_tensor_values, 0);
 
-        ///  create the lowerBound, upperbound and step for loop
-        int indexValueSize = sp_op.getIndexValueSize();
-        comet_debug() << "indexValueSize in SparseTensorConstructOp:" << indexValueSize << "\n";
-
-        auto loadOpForNNZ = op->getOperand(0).getDefiningOp()->getOperand(indexValueSize);
-        comet_debug() << "Corresponding AllocOp from SparseTensorConstructOp:\n";
-        comet_vdump(loadOpForNNZ);
-        auto memAllocForNNZ = loadOpForNNZ.getDefiningOp()->getOperand(0);
-        comet_debug() << "Corresponding MemAllocOp for NNZ:\n";
-        comet_vdump(memAllocForNNZ);
-
-        MemRefType resultMemTy = memAllocForNNZ.getDefiningOp()->getResult(0).getType().cast<MemRefType>();
-        auto memRefRank = resultMemTy.getRank();
-        comet_debug() << "memRefRank for alloc: " << memRefRank << "\n";
-        assert(memRefRank == 1); /// Memref rank should be 1
-
-        auto memRefDimSize = resultMemTy.getDimSize(memRefRank - 1);
-        comet_debug() << "memRefDimSize for alloc: " << memRefDimSize << "\n";
-
-        Value upperBound;
-        if (memRefDimSize == 1) /// size of value array comes from temporary sparse tensor and Dimsize of alloc is one
-        {
-          upperBound = rewriter.create<memref::LoadOp>(loc, memAllocForNNZ, alloc_zero_loc);
-        }
-        else
-        {
-          /// size of value array comes from read_input_sizes_2D_f64, and alloc dimsize can be only expected size
-          auto expectedMemRefSize = sp_op.getTotalParamCount();
-          comet_debug() << "tensorRanks: " << tensorRanks << "\n";
-          comet_debug() << "expectedMemRefSize: " << expectedMemRefSize << "\n";
-          assert(memRefDimSize == expectedMemRefSize);
-          upperBound = op->getOperand(0).getDefiningOp()->getOperand(indexValueSize);
-        }
         comet_debug() << "Upper Bound:\n";
         comet_vdump(upperBound);
         auto lowerBound = rewriter.create<ConstantIndexOp>(loc, 0);
@@ -591,12 +507,8 @@ namespace
         rewriter.setInsertionPointToStart(loop.getBody());
 
         /// Build loop body
-        int indexValuePtr = (tensorRanks * 4); /// 4 corresponding to pos, crd
-        auto alloc_op = op->getOperand(0).getDefiningOp()->getOperand(indexValuePtr).getDefiningOp()->getOperand(0);
-        comet_debug() << " ValueAllocOp";
-        comet_vdump(alloc_op);
         std::vector<Value> indices = {loop.getInductionVar()};
-        auto load_rhs = rewriter.create<memref::LoadOp>(loc, alloc_op, indices);
+        auto load_rhs = rewriter.create<tensor::ExtractOp>(loc, sp_tensor_values, indices);
         auto res_load = rewriter.create<memref::LoadOp>(loc, res, alloc_zero_loc);
         auto reduce = rewriter.create<AddFOp>(loc, load_rhs, res_load);
         rewriter.create<memref::StoreOp>(loc, reduce, res, alloc_zero_loc);
@@ -605,10 +517,10 @@ namespace
         rewriter.restoreInsertionPoint(insertPt);
         comet_vdump(loop);
       }
-
+      rewriter.setInsertionPoint(op);
       /// Important to replace all uses of this operation with the new one, otherwise, the current op won't be lowered.
-      op.replaceAllUsesWith(res);
-      rewriter.eraseOp(op);
+      memref::LoadOp load = rewriter.create<memref::LoadOp>(op->getLoc(), res, ValueRange(cst_zero));
+      rewriter.replaceOp(op, load);
 
       return success();
     }
@@ -641,26 +553,6 @@ namespace
       comet_vdump(const_index_0);
       std::vector<Value> alloc_zero_loc = {const_index_0};
 
-      if (auto toTensorOp = llvm::dyn_cast_if_present<ToTensorOp>(rhs.getDefiningOp()))
-      {
-        rhs = toTensorOp.getMemref();
-        // comet_debug() << "RHS is a tensor\n";
-        // rhs = rewriter.create<memref::LoadOp>(loc, rhs, alloc_zero_loc);
-        // comet_vdump(rhs);
-      }
-      if (auto toTensorOp = llvm::dyn_cast_if_present<ToTensorOp>(lhs.getDefiningOp()))
-      {
-        lhs = toTensorOp.getMemref();
-        // comet_debug() << "RHS is a tensor\n";
-        // rhs = rewriter.create<memref::LoadOp>(loc, rhs, alloc_zero_loc);
-        // comet_vdump(rhs);
-      }
-      // if (lhsType.isa<MemRefType>())
-      // {
-      //   comet_debug() << "LHS is a tensor\n";
-      //   lhs = rewriter.create<memref::LoadOp>(loc, lhs, alloc_zero_loc);
-      // }
-
       Value res;
       bool res_comes_from_setop = false;
       for (auto u : op.getOperation()->getResult(0).getUsers())
@@ -677,12 +569,6 @@ namespace
           {
             res = cast<tensorAlgebra::TensorSetOp>(*(++res.getUsers().begin())).getRhs();
           }
-          if(auto toTensor = mlir::dyn_cast_or_null<ToTensorOp>(res.getDefiningOp()))
-          {
-            res = toTensor.getMemref();
-          }
-          comet_debug() << "Result from SetOp:\n";
-          comet_vdump(res);
           res_comes_from_setop = true;
           break;
         }
@@ -703,40 +589,50 @@ namespace
       Value res_val;
       if (op_attr.compare("+") == 0)
       {
-        rewriter.create<linalg::AddOp>(loc, ValueRange{lhs, rhs}, ValueRange(res));
-        // res_val = rewriter.create<AddFOp>(loc, lhs, rhs);
+        res_val = rewriter.create<linalg::AddOp>(loc, ValueRange{lhs, rhs}, ValueRange(res)).getResultTensors()[0];
       }
       else if (op_attr.compare("-") == 0)
       {
-        rewriter.create<linalg::SubOp>(loc, ValueRange{lhs, rhs}, ValueRange(res));
-        // res_val = rewriter.create<SubFOp>(loc, lhs, rhs);
+        res_val = rewriter.create<linalg::SubOp>(loc, ValueRange{lhs, rhs}, ValueRange(res)).getResultTensors()[0];
       }
       else if (op_attr.compare("*") == 0)
       {
-        rewriter.create<linalg::MulOp>(loc, ValueRange{lhs, rhs}, ValueRange(res));
-        // res_val = rewriter.create<MulFOp>(loc, lhs, rhs);
+        res_val = rewriter.create<linalg::MulOp>(loc, ValueRange{lhs, rhs}, ValueRange(res)).getResultTensors()[0];
       }
       else if (op_attr.compare("/") == 0)
       {
-        rewriter.create<linalg::DivOp>(loc, ValueRange{lhs, rhs}, ValueRange(res));
-        // res_val = rewriter.create<DivFOp>(loc, lhs, rhs);
+        res_val = rewriter.create<linalg::DivOp>(loc, ValueRange{lhs, rhs}, ValueRange(res)).getResultTensors()[0];
       }
       else
       {
         llvm::errs() << "ERROR: Unsuported Operation\n";
       }
-
-      comet_vdump(res_val);
-      /// store res_val to res
-      // rewriter.create<linalg::CopyOp>(loc, res_val, res);
-      // [[maybe_unused]] auto storeOp = rewriter.create<memref::StoreOp>(loc, res_val, res, alloc_zero_loc);
-      comet_vdump(storeOp);
-
-      op.replaceAllUsesWith(res);
+      
+      op.replaceAllUsesWith(res_val);
       rewriter.eraseOp(op);
       return success();
     }
   }; /// ScalarOpsLowering
+
+class ConvertSetOp : public OpConversionPattern<TensorSetOp> {
+  using OpConversionPattern<TensorSetOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TensorSetOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+
+    auto opAdaptor = llvm::cast<TensorSetOpAdaptor>(adaptor);
+    Value lhs = opAdaptor.getLhs();
+    Value rhs = opAdaptor.getRhs();
+    rewriter.replaceUsesWithIf(rhs, lhs, [&](OpOperand& use) { 
+      auto user = use.getOwner();
+      auto ancestor = op->getBlock()->findAncestorOpInBlock(*user);
+      return (ancestor && op->isBeforeInBlock(ancestor)); 
+    });
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
 
 } /// end anonymous namespace.
 
@@ -778,10 +674,15 @@ void LowerTensorAlgebraToSCFPass::runOnOperation()
                          scf::SCFDialect,
                          ArithDialect,
                          memref::MemRefDialect,
+                         func::FuncDialect,
                          bufferization::BufferizationDialect>();
 
-  target.addLegalOp<func::CallOp>();
-
+  target.addLegalDialect<tensorAlgebra::TADialect, indexTree::IndexTreeDialect, tensor::TensorDialect>();
+  target.addIllegalOp<tensorAlgebra::TransposeOp, 
+                      tensorAlgebra::ReduceOp,
+                      tensorAlgebra::ScalarOp,
+                      tensorAlgebra::DenseConstantOp, 
+                      tensorAlgebra::TensorSetOp>();
   /// Now that the conversion target has been defined, we just need to provide
   /// the set of patterns that will lower the TA operations.
 
@@ -789,7 +690,8 @@ void LowerTensorAlgebraToSCFPass::runOnOperation()
   patterns.insert<TensorTransposeLowering,
                   ReduceOpLowering,
                   ScalarOpsLowering,
-                  ConstantOpLowering>(&getContext());
+                  ConstantOpLowering,
+                  ConvertSetOp>(&getContext());
   /// With the target and rewrite patterns defined, we can now attempt the
   /// conversion. The conversion will signal failure if any of our `illegal`
   /// operations were not converted successfully.

@@ -29,9 +29,13 @@
 #include "comet/Dialect/TensorAlgebra/IR/TADialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 
+#include "mlir/IR/BuiltinTypeInterfaces.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 using namespace mlir;
 using namespace mlir::tensorAlgebra;
@@ -41,6 +45,10 @@ using namespace mlir::tensorAlgebra;
 //===----------------------------------------------------------------------===//
 /// TADialect
 //===----------------------------------------------------------------------===//
+
+
+//===----------------------------------------------------------------------===//
+/// ConstantOp
 
 /// Build a constant operation.
 /// The builder is passed as an argument, so is the state that this method is
@@ -263,180 +271,123 @@ void TensorDimOp::build(mlir::OpBuilder &builder, mlir::OperationState &result,
 /// TA Types
 //===----------------------------------------------------------------------===//
 
-namespace mlir
+// Implements the shaped type interface for the workspace type
+ShapedType WorkspaceType::cloneWith(std::optional<llvm::ArrayRef<int64_t>> shape, Type elementType) const
 {
-  namespace tensorAlgebra
-  {
-    namespace detail
-    {
-      /// This class represents the internal storage of the tensorAlgebra `SparseTensorType`.
-      struct SparseTensorTypeStorage : public mlir::TypeStorage
-      {
-        /// The `KeyTy` is a required type that provides an interface for the storage
-        /// instance. This type will be used when uniquing an instance of the type
-        /// storage. For our struct type, we will unique each instance structurally on
-        /// the elements that it contains.
-        using KeyTy = llvm::ArrayRef<mlir::Type>;
-
-        /// A constructor for the type storage instance.
-        SparseTensorTypeStorage(llvm::ArrayRef<mlir::Type> elementTypes)
-            : elementTypes(elementTypes) {}
-
-        /// Define the comparison function for the key type with the current storage
-        /// instance. This is used when constructing a new instance to ensure that we
-        /// haven't already uniqued an instance of the given key.
-        bool operator==(const KeyTy &key) const { return key == elementTypes; }
-
-        /// Define a hash function for the key type. This is used when uniquing
-        /// instances of the storage, see the `SparseTensorType::get` method.
-        /// Note: This method isn't necessary as both llvm::ArrayRef and mlir::Type
-        /// have hash functions available, so we could just omit this entirely.
-        static llvm::hash_code hashKey(const KeyTy &key)
-        {
-          return llvm::hash_value(key);
-        }
-
-        /// Define a construction function for the key type from a set of parameters.
-        /// These parameters will be provided when constructing the storage instance
-        /// itself.
-        /// Note: This method isn't necessary because KeyTy can be directly
-        /// constructed with the given parameters.
-        static KeyTy getKey(llvm::ArrayRef<mlir::Type> elementTypes)
-        {
-          return KeyTy(elementTypes);
-        }
-
-        /// Define a construction method for creating a new instance of this storage.
-        /// This method takes an instance of a storage allocator, and an instance of a
-        /// `KeyTy`. The given allocator must be used for *all* necessary dynamic
-        /// allocations used to create the type storage and its internal.
-        static SparseTensorTypeStorage *construct(mlir::TypeStorageAllocator &allocator,
-                                                  const KeyTy &key)
-        {
-          /// Copy the elements from the provided `KeyTy` into the allocator.
-          llvm::ArrayRef<mlir::Type> elementTypes = allocator.copyInto(key);
-
-          /// Allocate the storage instance and construct it.
-          return new (allocator.allocate<SparseTensorTypeStorage>())
-              SparseTensorTypeStorage(elementTypes);
-        }
-
-        /// The following field contains the element types of the struct.
-        llvm::ArrayRef<mlir::Type> elementTypes;
-      };
-
-    } /// end namespace detail
-  } /// end namespace tensoralgebra
-} /// end namespace mlir
-
-/// Create an instance of a `SparseTensorType` with the given element types. There
-/// *must* be at least one element type.
-SparseTensorType SparseTensorType::get(llvm::ArrayRef<mlir::Type> elementTypes)
-{
-  assert(!elementTypes.empty() && "expected at least 1 element type");
-
-  /// Call into a helper 'get' method in 'TypeBase' to get a uniqued instance
-  /// of this type. The first two parameters are the context to unique in and the
-  /// kind of the type. The parameters after the type kind are forwarded to the
-  /// storage instance.
-  mlir::MLIRContext *ctx = elementTypes.front().getContext();
-  return Base::get(ctx, elementTypes);
+  // TODO: This may (?) require converting dimensions? Not sure 
+  assert(false && "Workspace tensor cannot not be closed into another type");
+  return NULL;
 }
 
-/// Returns the element types of this sparse tensor type.
-llvm::ArrayRef<mlir::Type> SparseTensorType::getElementTypes()
+bool WorkspaceType::hasRank() const
 {
-  /// 'getImpl' returns a pointer to the internal storage instance.
-  return getImpl()->elementTypes;
+  return true;
 }
 
-Type mlir::tensorAlgebra::TADialect::parseType(DialectAsmParser &parser) const
+llvm::ArrayRef<int64_t> WorkspaceType::getShape() const
 {
-  /// Parse the main keyword for the type.
-  StringRef keyword;
-  /// for "indexlabel" and "spTensor" type
-  if (parser.parseKeyword(&keyword))
-    return Type();
-
-  MLIRContext *context = getContext();
-
-  /// Handle 'range' types.
-  if (keyword == "indexlabel")
-  {
-    return IndexLabelType::get(context);
-  }
-
-  /// Parse the element types of the spTensor.
-  if (keyword == "spTensor")
-  {
-    if (parser.parseLess())
-    {
-      return Type();
-    }
-
-    SmallVector<mlir::Type, 1> elementTypes;
-    do
-    {
-      /// Parse the current element type.
-      llvm::SMLoc typeLoc = parser.getCurrentLocation();
-      mlir::Type elementType;
-
-      if (parser.parseType(elementType))
-        return nullptr;
-
-      /// Check that the type is either a TensorType or another SparseTensorType.
-      if (!elementType.isa<mlir::TensorType, SparseTensorType, IndexType>())
-      {
-        parser.emitError(typeLoc, "element type for a struct must either "
-                                  "be a TensorType or a SparseTensorType, got: ")
-            << elementType;
-        return Type();
-      }
-      elementTypes.push_back(elementType);
-
-      /// Parse the optional: `,`
-    } while (succeeded(parser.parseOptionalComma()));
-
-    /// Parse: `>`
-    if (parser.parseGreater())
-      return Type();
-
-    return SparseTensorType::get(elementTypes);
-  }
-
-  parser.emitError(parser.getNameLoc(),
-                   "unknown TensorAlgebra type: " + keyword);
-  return Type();
+  return getDims();
 }
 
-/// IndexLabelType prints as just "indexlabel".
-static void print(IndexLabelType type, DialectAsmPrinter &printer)
+// Implements the shaped type interface for the sparse tensor type
+ShapedType SparseTensorType::cloneWith(std::optional<llvm::ArrayRef<int64_t>> shape, Type elementType) const
 {
-  printer << "indexlabel";
+  // TODO: This may (?) require converting dimensions? Not sure 
+  assert(false && "Sparse tensor cannot not be closed into another type");
+  return NULL;
 }
 
-void mlir::tensorAlgebra::TADialect::printType(
-    Type type, DialectAsmPrinter &printer) const
+bool SparseTensorType::hasRank() const
 {
-  if (type.isa<IndexLabelType>())
-  {
-    print(type.cast<IndexLabelType>(), printer);
-  }
-  else if (type.isa<SparseTensorType>())
-  {
-    /// Currently the only sparse tensor type is a struct type.
-    SparseTensorType sparseTensorType = type.cast<SparseTensorType>();
-
-    /// Print the struct type according to the parser format.
-    printer << "spTensor<";
-    llvm::interleaveComma(sparseTensorType.getElementTypes(), printer);
-    printer << '>';
-  }
-  else
-  {
-    llvm_unreachable("Unhandled TensorAlgebra type");
-  }
+  return true;
 }
+
+llvm::ArrayRef<int64_t> SparseTensorType::getShape() const
+{
+  return getDims();
+}
+
+::mlir::Type SparseTensorType::parse(::mlir::AsmParser &odsParser) {
+  ::mlir::FailureOr<::mlir::Type> _result_element_type; 
+  ::mlir::FailureOr<::mlir::IntegerType> indices_type;
+  SmallVector<int64_t> _result_dims;
+  SmallVector<TensorFormatEnum> result_formats;
+
+  // Parse literal '<'
+  if (odsParser.parseLess()) return {};
+
+  // Parse variable 'element_type'
+  _result_element_type = FieldParser<Type>::parse(odsParser);
+  if (failed(_result_element_type)) {
+    odsParser.emitError(odsParser.getCurrentLocation(), "failed to parse SparseTensor parameter 'element_type' which is to be a `Type`");
+    return {};
+  }
+
+    // Parse literal ','
+  if (odsParser.parseComma()) return {};
+
+  // Parse variable 'indices_type'
+  indices_type = ::mlir::FieldParser<::mlir::IntegerType>::parse(odsParser);
+  if (::mlir::failed(indices_type)) {
+    odsParser.emitError(odsParser.getCurrentLocation(), "failed to parse SparseTensor parameter 'indices_type' which is to be a `::mlir::IntegerType`");
+    return {};
+  }
+  // Parse literal ','
+  if (odsParser.parseComma()) return {};
+
+  // Parse variable 'dims'
+  if(odsParser.parseDimensionList(_result_dims, true, false)) {
+    odsParser.emitError(odsParser.getCurrentLocation(), "failed to parse SparseTensor parameter 'dims' which is to be a `ArrayRef<int64_t>`");
+    return {};
+  }
+  // Parse literal ','
+  if (odsParser.parseComma()) return {};
+
+  // Parse variable 'format'
+  do {
+    auto format = ::mlir::FieldParser<TensorFormatEnum>::parse(odsParser);
+    if (mlir::failed(format))  // Parse each integer
+      return {};
+    result_formats.push_back(*format);
+  } while (odsParser.parseOptionalComma().succeeded()); 
+
+  // Parse literal '>'
+  if (odsParser.parseGreater()) return {};
+
+   return SparseTensorType::get(odsParser.getContext(),
+      ::mlir::Type((*_result_element_type)),
+      ::mlir::IntegerType((*indices_type)),
+      ::llvm::ArrayRef<int64_t>((_result_dims)),
+      ::llvm::ArrayRef<TensorFormatEnum>((result_formats)));
+}
+
+
+void SparseTensorType::print(::mlir::AsmPrinter &odsPrinter) const {
+  ::mlir::Builder odsBuilder(getContext());
+  odsPrinter << "<";
+  odsPrinter.printStrippedAttrOrType(getElementType());
+  odsPrinter << ",";
+  odsPrinter << ' ';
+  odsPrinter.printStrippedAttrOrType(getIndicesType());
+  odsPrinter << ",";
+  odsPrinter << ' ';
+  odsPrinter.printDimensionList(getDims());
+  odsPrinter << ",";
+  odsPrinter << ' ';
+  odsPrinter.printStrippedAttrOrType(getFormat());
+  odsPrinter << ">";
+}
+
+//===----------------------------------------------------------------------===//
+/// TableGen'd type definitions
+//===----------------------------------------------------------------------===//
+#define GET_TYPEDEF_CLASSES
+#include "comet/Dialect/TensorAlgebra/IR/TATypes.cpp.inc"
+
+//===----------------------------------------------------------------------===//
+/// TableGen'd enum definitions
+//===----------------------------------------------------------------------===//
+#include "comet/Dialect/TensorAlgebra/IR/TAEnums.cpp.inc"
 
 //===----------------------------------------------------------------------===//
 /// TableGen'd op method definitions
@@ -453,10 +404,18 @@ void mlir::tensorAlgebra::TADialect::printType(
 /// the point of registration of types and operations for the dialect.
 void TADialect::initialize()
 {
+  addTypes<
+#define GET_TYPEDEF_LIST
+#include "comet/Dialect/TensorAlgebra/IR/TATypes.cpp.inc"
+      >();
+
+  addAttributes<
+#define GET_ATTRDEF_LIST
+#include "comet/Dialect/TensorAlgebra/IR/TAAttrs.cpp.inc"
+  >();
+
   addOperations<
 #define GET_OP_LIST
 #include "comet/Dialect/TensorAlgebra/IR/TAOps.cpp.inc"
       >();
-  // addTypes<IndexLabelType, SparseTensorType>();
-  addTypes<SparseTensorType, IndexLabelType>();
 }

@@ -44,6 +44,9 @@
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/Func/Transforms/Passes.h"
 #include "mlir/Dialect/Tensor/Transforms/Passes.h"
+#include "mlir/Dialect/SCF/Transforms/Passes.h"
+#include "mlir/Dialect/Bufferization/Transforms/Passes.h"
+
 
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
@@ -339,6 +342,14 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
 
   mlir::OpPassManager &optPM = pm.nest<mlir::func::FuncOp>();
 
+  /// Check to see if we are dumping to TA dialect.
+  if (emitTA)
+  {
+    if (mlir::failed(pm.run(*module)))
+      return 4;
+    return 0;
+  }
+
   ///  =============================================================================
   ///  High-level optimization at the TA dialect
   ///  Such as finding the optimal ordering of dense tensor contractions, or reformulating tensor contractions
@@ -375,25 +386,14 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
     /// Generate the index tree IR
     optPM.addPass(mlir::comet::createLowerTensorAlgebraToIndexTreePass(CodegenTarget));
 
-    if (OptKernelFusion)
-    {
-      /// Apply partial fusion on index tree dialect for some compound expressions.
-      optPM.addPass(mlir::comet::createIndexTreeKernelFusionPass());
-    }
+    // Create new pass manager to optimize the index tree dialect
+    optPM.addPass(mlir::comet::createIndexTreeDomainInferencePass());
 
-    if (OptWorkspace)
-    {
-      /// Optimized workspace transformations, reduce iteration space for nonzero elements
-      optPM.addPass(mlir::comet::createIndexTreeWorkspaceTransformationsPass());
-    }
-
-    /// Dump index tree dialect.
-    if (emitIT)
-    {
-      if (mlir::failed(pm.run(*module)))
-        return 4;
-      return 0;
-    }
+    // if (OptKernelFusion)
+    // {
+    //   /// Apply partial fusion on index tree dialect for some compound expressions.
+    //   optPM.addPass(mlir::comet::createIndexTreeKernelFusionPass());
+    // }
   }
 
   /// =============================================================================
@@ -408,7 +408,10 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
   /// input and output sparse tensor declaration lowering are distant and need different information
   optPM.addPass(mlir::comet::createSparseTensorDeclLoweringPass());
   optPM.addPass(mlir::comet::createDenseTensorDeclLoweringPass());
+  optPM.addPass(mlir::comet::createSparseTempOutputTensorDeclLoweringPass());
+  optPM.addPass(mlir::comet::createSparseOutputTensorDeclLoweringPass());
   optPM.addPass(mlir::comet::createTensorFillLoweringPass());
+  optPM.addPass(mlir::comet::createDimOpLoweringPass());
 
   /// =============================================================================
 
@@ -419,9 +422,9 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
     optPM.addPass(mlir::comet::createLoweringTTGTPass(IsSelectBestPermTTGT, selectedPermNum, IsPrintFlops));
   }
 
-  /// =============================================================================
-  /// Operation based optimizations
-  /// =============================================================================
+  // /// =============================================================================
+  // /// Operation based optimizations
+  // /// =============================================================================
   if (OptMatmulTiling)
   {
     optPM.addPass(mlir::comet::createLinAlgMatmulTilingPass());
@@ -435,22 +438,8 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
   /// =============================================================================
   /// Lowering all the operations to loops
   /// =============================================================================
-  if (IsLoweringtoSCF || emitLoops || emitTriton_ ||  emitLLVM )
-  {
-
-    /// Workspace transformations will create new dense tensor declarations, so we need to call createDenseTensorDeclLoweringPass
-    optPM.addPass(mlir::comet::createDenseTensorDeclLoweringPass());            /// lowers dense input/output tensor declaration
-    optPM.addPass(mlir::comet::createSparseTempOutputTensorDeclLoweringPass()); /// Temporary sparse output tensor declarations introduced by compound expressions
-                                                                                /// should be lowered before sparse output tensor declarations
-    optPM.addPass(mlir::comet::createSparseOutputTensorDeclLoweringPass());     /// lowering for sparse output tensor declarations
-                                                                                //(sparse_output_tensor_decl and temp_sparse_output_tensor_decl)
-
-    optPM.addPass(mlir::comet::createDimOpLoweringPass());
-
-    /// The partial Fusion pass might add new tensor.fill operations
-    optPM.addPass(mlir::comet::createTensorFillLoweringPass());
-    optPM.addPass(mlir::comet::createPCToLoopsLoweringPass());
-
+  if (IsLoweringtoSCF || emitLoops || emitLLVM)
+  { 
     /// =============================================================================
     /// Lowering of other operations such as transpose, sum, etc. to SCF dialect
     /// =============================================================================
@@ -458,11 +447,30 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
     /// If it is a transpose of sparse tensor, it lowers the code to make a runtime call to specific sorting algorithm
     optPM.addPass(mlir::comet::createLowerTensorAlgebraToSCFPass());
 
+    /// Concretize the domains of all the index variables
+    optPM.addPass(mlir::comet::createIndexTreeDomainConcretizationPass());
+
+    if (OptWorkspace) {
+      /// Optimized workspace transformations, reduce iteration space for nonzero elements
+      optPM.addPass(mlir::comet::createIndexTreeWorkspaceTransformationsPass());
+    }
+
+    optPM.addPass(mlir::comet::createIndexTreeSymbolicComputePass());
+
+    /// Dump index tree dialect.
+    if (emitIT)
+    {
+      if (mlir::failed(pm.run(*module)))
+        return 4;
+      return 0;
+    }
+
     /// Finally lowering index tree to SCF dialect
     optPM.addPass(mlir::comet::createLowerIndexTreeToSCFPass());
-    optPM.addPass(mlir::tensor::createTensorBufferizePass());
-    pm.addPass(mlir::func::createFuncBufferizePass()); /// Needed for func
-    pm.addPass(mlir::createConvertLinalgToLoopsPass());
+    optPM.addPass(mlir::comet::createConvertSymbolicDomainsPass());
+    optPM.addPass(mlir::comet::createSparseTensorConversionPass());
+    optPM.addPass(mlir::comet::createIndexTreeInliningPass());
+    optPM.addPass(mlir::createCanonicalizerPass());
 
     if (OptDenseTransposeOp) /// Optimize Dense Transpose operation
     {
@@ -487,14 +495,23 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
 
 
 
-  /// =============================================================================
-  /// Late lowering passes
-  /// =============================================================================
+  // /// =============================================================================
+  // /// Late lowering passes
+  // /// =============================================================================
+  // pm.addPass(mlir::bufferization::createEmptyTensorToAllocTensorPass());
+  pm.addPass(mlir::comet::createTABufferizeFunc());
+  pm.addPass(mlir::createCanonicalizerPass());
 
-  optPM.addPass(mlir::comet::createSTCRemoveDeadOpsPass());
-  optPM.addPass(mlir::comet::createLateLoweringPass());
-  // pm.addPass(mlir::createCanonicalizerPass());
-  optPM.addPass(mlir::createCSEPass());
+  mlir::bufferization::OneShotBufferizationOptions opts;
+  opts.allowUnknownOps = true;
+  pm.addPass(mlir::bufferization::createOneShotBufferizePass(opts));
+
+  mlir::OpPassManager &late_lowering_pm = pm.nest<mlir::func::FuncOp>();
+  late_lowering_pm.addPass(mlir::comet::createSTCRemoveDeadOpsPass());
+  late_lowering_pm.addPass(mlir::comet::createLateLoweringPass());
+  
+  pm.addPass(mlir::createCanonicalizerPass());
+  pm.addPass(mlir::createCSEPass());
 
 #ifdef ENABLE_GPU_TARGET
   if (CodegenTarget == TargetDevice::GPU && (emitTriton_ || emitLLVM || IsLoweringtoTriton))
@@ -616,6 +633,7 @@ int main(int argc, char **argv)
   context.loadDialect<mlir::linalg::LinalgDialect>();
   context.loadDialect<mlir::scf::SCFDialect>();
   context.loadDialect<mlir::bufferization::BufferizationDialect>();
+  context.loadDialect<mlir::index::IndexDialect>();
 
   mlir::OwningOpRef<mlir::ModuleOp> module;
 

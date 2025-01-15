@@ -34,16 +34,13 @@ namespace mlir
     namespace comet
     {
 #define GEN_PASS_DECL_CONVERTINDEXTREETOSCF
+#define GEN_PASS_DECL_CONVERTSYMBOLICDOMAINS
 #include "comet/Conversion/Passes.h.inc"
-
-        /// Collect a set of patterns to convert IndexTree operations to SCF
-        /// operations within the SCF dialect.
-        void populateIndexTreeToSCFConversionPatterns(RewritePatternSet &patterns);
-
         /// Lowers indexTree operations (e.g., IndexTreeComputeLHSOp, IndexTreeComputeRHSOp and IndexTreeComputeOp)
         /// to equivalent scf constructs including basic blocks and arithmetic
         /// primitives).
         std::unique_ptr<Pass> createLowerIndexTreeToSCFPass();
+        std::unique_ptr<Pass> createConvertSymbolicDomainsPass();
     }
 } // namespace mlir
 

@@ -85,5 +85,16 @@ def TensorAlgebraSparseOutputTensorDeclLowering : Pass<"lower-sparse-output-tens
     "comet::TensorAlgebraDialect"
   ];
 }
+def TensorAlgebraBufferizeFunc : Pass<"ta-bufferize-func"> {
+  let summary = "";
+  let description = [{
+
+      }];
+  let constructor = "comet::createTABufferizeFunc()";
+  let dependentDialects = [
+    "comet::TensorAlgebraDialect", "func::FuncDialect"
+  ];
+}
+
 
 #endif /// COMET_DIALECT_TENSORALGEBRA_PASSES

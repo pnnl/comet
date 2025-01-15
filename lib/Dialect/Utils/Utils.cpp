@@ -28,6 +28,7 @@
 #include "comet/Dialect/IndexTree/IR/IndexTreeDialect.h"
 #include "comet/Dialect/Utils/Utils.h"
 
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -45,7 +46,7 @@
 // *********** For debug purpose *********//
 
 /// TODO(gkestor): supports only f64 -  need generalization
-std::string VALUETYPE = "f64";
+// std::string VALUETYPE = "f64";
 
 using namespace mlir::arith;
 using namespace mlir::affine;
@@ -136,48 +137,36 @@ namespace mlir
       auto elementType = memtype.getElementType();
 
       Value cst_init;
-      if (elementType.isF64())
-      {
-        comet_debug() << "Element type F64\n";
-        cst_init = rewriter.create<ConstantOp>(loc, rewriter.getF64FloatAttr(0.0));
-      }
-      else if (elementType.isF32())
-      {
-        comet_debug() << "Element type F32\n";
-        cst_init = rewriter.create<ConstantOp>(loc, rewriter.getF32FloatAttr(0.0));
-      }
-      else if (elementType.isIndex())
+      // if (elementType.isF64())
+      // {
+      //   comet_debug() << "Element type F64\n";
+      //   cst_init = rewriter.create<ConstantOp>(loc, rewriter.getZeroAttr(elementType));
+      // }
+      // else if (elementType.isF32())
+      // {
+      //   comet_debug() << "Element type F32\n";
+      //   cst_init = rewriter.create<ConstantOp>(loc, rewriter.getF32FloatAttr(0.0));
+      // }
+      if (elementType.isIndex())
       {
         comet_debug() << "Element type Index\n";
         cst_init = rewriter.create<ConstantIndexOp>(loc, 0);
       }
-      else if (elementType.isInteger(1))
+      else 
       {
-        comet_debug() << "Element type I1 - boolean\n";
-        cst_init = rewriter.create<ConstantOp>(loc, rewriter.getI1Type(), rewriter.getBoolAttr(0));
+        cst_init = rewriter.create<ConstantOp>(loc, rewriter.getZeroAttr(elementType));
       }
-      else
-      {
-        llvm::errs() << __FILE__ << ":" << __LINE__ << "Not supported memory reference type. Supported element Types are F32, F64, Index \n";
-      }
+      // else if (elementType.isInteger(1))
+      // {
+      //   comet_debug() << "Element type I1 - boolean\n";
+      //   cst_init = rewriter.create<ConstantOp>(loc, rewriter.getI1Type(), rewriter.getBoolAttr(0));
+      // }
+      // else
+      // {
+      //   llvm::errs() << __FILE__ << ":" << __LINE__ << "Not supported memory reference type. Supported element Types are F32, F64, Index \n";
+      // }
 
-      /// TODO(gkestor): add better initialization method based on the dimension, leverage existing operations for initialization
-      auto lowerBound = rewriter.create<ConstantIndexOp>(loc, 0);
-      auto upperBound = alloc_op.getDefiningOp()->getOperand(0);
-      auto step = rewriter.create<ConstantIndexOp>(loc, 1);
-      auto loop = rewriter.create<scf::ForOp>(loc, lowerBound, upperBound, step);
-      auto insertPt = rewriter.saveInsertionPoint();
-      rewriter.setInsertionPointToStart(loop.getBody());
-
-      /// Build loop body
-      std::vector<Value> indices = {loop.getInductionVar()};
-      rewriter.create<memref::StoreOp>(loc, cst_init, alloc_op, ValueRange{indices});
-
-      /// need to restore the insertion point to the previous point
-      rewriter.restoreInsertionPoint(insertPt);
-      comet_debug() << " insertAllocAndInitialize loop "
-                    << "\n";
-      comet_vdump(loop);
+      rewriter.create<linalg::FillOp>(loc, ValueRange(cst_init), ValueRange(alloc_op));
 
       return alloc_op;
     }
@@ -500,14 +489,14 @@ namespace mlir
     }
 
     /// for string delimiter
-    std::vector<std::string> stringSplit(std::string s, std::string delimiter)
+    std::vector<llvm::StringRef> stringSplit(llvm::StringRef s, llvm::StringRef delimiter)
     {
       /// comet_debug() << "split formats string: " << s << ", deli: "<< delimiter << ".\n";
 
-      std::vector<std::string> res;
+      std::vector<llvm::StringRef> res;
 
       std::string format = "";
-      for (unsigned int i = 0; i < s.length(); i++)
+      for (unsigned int i = 0; i < s.size(); i++)
       {
         comet_debug() << "s[" << i << "]: " << s[i] << "\n";
         if (s[i] != delimiter[0] && s[i] != delimiter[1])
@@ -526,13 +515,13 @@ namespace mlir
       res.push_back(format);
 
       comet_debug() << "The final format: ";
-      print_vector<std::string>(res);
+      print_vector<llvm::StringRef>(res);
       return res;
     }
 
-    std::vector<std::vector<std::string>> getAllFormats(ArrayAttr opFormatsArrayAttr, std::vector<std::vector<int64_t>> allPerms)
+    std::vector<std::vector<llvm::StringRef>> getAllFormats(ArrayAttr opFormatsArrayAttr, std::vector<std::vector<int64_t>> allPerms)
     {
-      std::vector<std::vector<std::string>> allFormats(allPerms.size());
+      std::vector<std::vector<llvm::StringRef>> allFormats(allPerms.size());
       /// format with each input matrix: ["CSR", "D", "D"] SpMM
       for (unsigned int i = 0; i < opFormatsArrayAttr.size(); i++)
       {
@@ -831,7 +820,7 @@ namespace mlir
       return false;
     }
 
-    std::vector<Value> getFormatsValue(std::string formats_str, int rank_size, PatternRewriter &rewriter, Location loc, IndexType indexType)
+    std::vector<Value> getFormatsValue(llvm::StringRef formats_str, int rank_size, PatternRewriter &rewriter, Location loc, IndexType indexType)
     {
       Value format_unk = rewriter.create<ConstantOp>(loc, indexType, rewriter.getIndexAttr(-1));
       Value format_dense = rewriter.create<ConstantOp>(loc, indexType, rewriter.getIndexAttr(0));
@@ -846,42 +835,42 @@ namespace mlir
       { /// 2D
         comet_debug() << " 2D\n";
         /// Value dim0_format, dim1_format;
-        if (formats_str.compare(0, 3, "CSR") == 0)
+        if (formats_str.compare("CSR") == 0)
         {
           dim_format.push_back(format_dense);
           dim_format.push_back(format_unk);
           dim_format.push_back(format_compressed);
           dim_format.push_back(format_unk);
         }
-        else if (formats_str.compare(0, 4, "DCSR") == 0)
+        else if (formats_str.compare("DCSR") == 0)
         {
           dim_format.push_back(format_compressed);
           dim_format.push_back(format_unk);
           dim_format.push_back(format_compressed);
           dim_format.push_back(format_unk);
         }
-        else if (formats_str.compare(0, 3, "COO") == 0)
+        else if (formats_str.compare("COO") == 0)
         { /// COO
           dim_format.push_back(format_compressednonunique);
           dim_format.push_back(format_unk);
           dim_format.push_back(format_singleton);
           dim_format.push_back(format_unk);
         }
-        else if (formats_str.compare(0, 3, "ELL") == 0)
+        else if (formats_str.compare("ELL") == 0)
         { /// ELL
           dim_format.push_back(format_dense);
           dim_format.push_back(format_dense);
           dim_format.push_back(format_singleton);
           dim_format.push_back(format_unk);
         }
-        else if (formats_str.compare(0, 4, "BCSR") == 0)
+        else if (formats_str.compare("BCSR") == 0)
         { /// BCSR
           dim_format.push_back(format_dense);
           dim_format.push_back(format_compressednonunique);
           dim_format.push_back(format_dense);
           dim_format.push_back(format_dense);
         }
-        else if (formats_str.compare(0, 3, "CSB") == 0)
+        else if (formats_str.compare("CSB") == 0)
         { /// CSB
           dim_format.push_back(format_dense);
           dim_format.push_back(format_dense);
@@ -890,22 +879,22 @@ namespace mlir
         }
         else if (formats_str.find("D") != std::string::npos || formats_str.find("CU") != std::string::npos || formats_str.find("CN") != std::string::npos || formats_str.find("S") != std::string::npos)
         {
-          std::vector<std::string> format_vec = stringSplit(formats_str, ", ");
+          std::vector<llvm::StringRef> format_vec = stringSplit(formats_str, ", ");
           for (auto n : format_vec)
           {
-            if (n.compare(0, 1, "D") == 0)
+            if (n.compare("D") == 0)
             {
               dim_format.push_back(format_dense);
             }
-            else if (n.compare(0, 2, "CU") == 0)
+            else if (n.compare("CU") == 0)
             {
               dim_format.push_back(format_compressed);
             }
-            else if (n.compare(0, 2, "CN") == 0)
+            else if (n.compare("CN") == 0)
             {
               dim_format.push_back(format_compressednonunique);
             }
-            else if (n.compare(0, 1, "S") == 0)
+            else if (n.compare("S") == 0)
             {
               dim_format.push_back(format_singleton);
             }
@@ -920,7 +909,7 @@ namespace mlir
       { /// 3D
         comet_debug() << " 3D\n";
         /// Value dim0_format, dim1_format, dim2_format;
-        if (formats_str.compare(0, 3, "CSF") == 0)
+        if (formats_str.compare("CSF") == 0)
         {
           dim_format.push_back(format_compressed);
           dim_format.push_back(format_unk);
@@ -929,7 +918,7 @@ namespace mlir
           dim_format.push_back(format_compressed);
           dim_format.push_back(format_unk);
         }
-        else if (formats_str.compare(0, 11, "ModeGeneric") == 0)
+        else if (formats_str.compare("ModeGeneric") == 0)
         {
           dim_format.push_back(format_compressednonunique);
           dim_format.push_back(format_unk);
@@ -938,7 +927,7 @@ namespace mlir
           dim_format.push_back(format_dense);
           dim_format.push_back(format_unk);
         }
-        else if (formats_str.compare(0, 3, "COO") == 0)
+        else if (formats_str.compare("COO") == 0)
         { /// COO
           dim_format.push_back(format_compressednonunique);
           dim_format.push_back(format_unk);
@@ -949,25 +938,25 @@ namespace mlir
         }
         else if (formats_str.find("D") != std::string::npos || formats_str.find("CU") != std::string::npos || formats_str.find("CN") != std::string::npos || formats_str.find("S") != std::string::npos)
         {
-          std::vector<std::string> format_vec = stringSplit(formats_str, ", ");
+          std::vector<llvm::StringRef> format_vec = stringSplit(formats_str, ", ");
           comet_debug() << " format_vec.size(): " << format_vec.size() << " \n";
 
           for (auto n : format_vec)
           {
             comet_debug() << "Current format attribute: " << n << "---\n";
-            if (n.compare(0, 1, "D") == 0)
+            if (n.compare("D") == 0)
             {
               dim_format.push_back(format_dense);
             }
-            else if (n.compare(0, 2, "CU") == 0)
+            else if (n.compare("CU") == 0)
             {
               dim_format.push_back(format_compressed);
             }
-            else if (n.compare(0, 2, "CN") == 0)
+            else if (n.compare("CN") == 0)
             {
               dim_format.push_back(format_compressednonunique);
             }
-            else if (n.compare(0, 1, "S") == 0)
+            else if (n.compare("S") == 0)
             {
               dim_format.push_back(format_singleton);
             }
@@ -994,7 +983,7 @@ namespace mlir
       return dim_format;
     }
 
-    std::vector<Value> getFormatsValueInt(std::string formats_str, int rank_size, PatternRewriter &rewriter, Location loc, IntegerType intType)
+    std::vector<Value> getFormatsValueInt(llvm::StringRef formats_str, int rank_size, PatternRewriter &rewriter, Location loc, IntegerType intType)
     {
       Value format_unk = rewriter.create<ConstantOp>(loc, intType, rewriter.getIntegerAttr(intType, -1));
       Value format_dense = rewriter.create<ConstantOp>(loc, intType, rewriter.getIntegerAttr(intType, 0));
@@ -1009,42 +998,42 @@ namespace mlir
       { /// 2D
         comet_debug() << " 2D\n";
         /// Value dim0_format, dim1_format;
-        if (formats_str.compare(0, 3, "CSR") == 0)
+        if (formats_str.compare("CSR") == 0)
         {
           dim_format.push_back(format_dense);
           dim_format.push_back(format_unk);
           dim_format.push_back(format_compressed);
           dim_format.push_back(format_unk);
         }
-        else if (formats_str.compare(0, 4, "DCSR") == 0)
+        else if (formats_str.compare("DCSR") == 0)
         {
           dim_format.push_back(format_compressed);
           dim_format.push_back(format_unk);
           dim_format.push_back(format_compressed);
           dim_format.push_back(format_unk);
         }
-        else if (formats_str.compare(0, 3, "COO") == 0)
+        else if (formats_str.compare("COO") == 0)
         { /// COO
           dim_format.push_back(format_compressednonunique);
           dim_format.push_back(format_unk);
           dim_format.push_back(format_singleton);
           dim_format.push_back(format_unk);
         }
-        else if (formats_str.compare(0, 3, "ELL") == 0)
+        else if (formats_str.compare("ELL") == 0)
         { /// ELL
           dim_format.push_back(format_dense);
           dim_format.push_back(format_dense);
           dim_format.push_back(format_singleton);
           dim_format.push_back(format_unk);
         }
-        else if (formats_str.compare(0, 4, "BCSR") == 0)
+        else if (formats_str.compare("BCSR") == 0)
         { /// BCSR
           dim_format.push_back(format_dense);
           dim_format.push_back(format_compressed);
           dim_format.push_back(format_dense);
           dim_format.push_back(format_dense);
         }
-        else if (formats_str.compare(0, 3, "CSB") == 0)
+        else if (formats_str.compare("CSB") == 0)
         { /// CSB
           dim_format.push_back(format_dense);
           dim_format.push_back(format_dense);
@@ -1053,22 +1042,22 @@ namespace mlir
         }
         else if (formats_str.find("D") != std::string::npos || formats_str.find("CU") != std::string::npos || formats_str.find("CN") != std::string::npos || formats_str.find("S") != std::string::npos)
         {
-          std::vector<std::string> format_vec = stringSplit(formats_str, ", ");
+          std::vector<llvm::StringRef> format_vec = stringSplit(formats_str, ", ");
           for (auto n : format_vec)
           {
-            if (n.compare(0, 1, "D") == 0)
+            if (n.compare("D") == 0)
             {
               dim_format.push_back(format_dense);
             }
-            else if (n.compare(0, 2, "CU") == 0)
+            else if (n.compare("CU") == 0)
             {
               dim_format.push_back(format_compressed);
             }
-            else if (n.compare(0, 2, "CN") == 0)
+            else if (n.compare("CN") == 0)
             {
               dim_format.push_back(format_compressednonunique);
             }
-            else if (n.compare(0, 1, "S") == 0)
+            else if (n.compare("S") == 0)
             {
               dim_format.push_back(format_singleton);
             }
@@ -1083,7 +1072,7 @@ namespace mlir
       { /// 3D
         comet_debug() << " 3D\n";
         /// Value dim0_format, dim1_format, dim2_format;
-        if (formats_str.compare(0, 3, "CSF") == 0)
+        if (formats_str.compare("CSF") == 0)
         {
           dim_format.push_back(format_compressed);
           dim_format.push_back(format_unk);
@@ -1092,7 +1081,7 @@ namespace mlir
           dim_format.push_back(format_compressed);
           dim_format.push_back(format_unk);
         }
-        else if (formats_str.compare(0, 11, "ModeGeneric") == 0)
+        else if (formats_str.compare("ModeGeneric") == 0)
         {
           dim_format.push_back(format_compressednonunique);
           dim_format.push_back(format_unk);
@@ -1101,7 +1090,7 @@ namespace mlir
           dim_format.push_back(format_dense);
           dim_format.push_back(format_unk);
         }
-        else if (formats_str.compare(0, 3, "COO") == 0)
+        else if (formats_str.compare("COO") == 0)
         { /// COO
           dim_format.push_back(format_compressednonunique);
           dim_format.push_back(format_unk);
@@ -1112,25 +1101,190 @@ namespace mlir
         }
         else if (formats_str.find("D") != std::string::npos || formats_str.find("CU") != std::string::npos || formats_str.find("CN") != std::string::npos || formats_str.find("S") != std::string::npos)
         {
-          std::vector<std::string> format_vec = stringSplit(formats_str, ", ");
+          std::vector<llvm::StringRef> format_vec = stringSplit(formats_str, ", ");
           comet_debug() << " format_vec.size(): " << format_vec.size() << " \n";
           /// print_vector<std::string>(format_vec);
           for (auto n : format_vec)
           {
             comet_debug() << "Current format attribute: " << n << "---\n";
-            if (n.compare(0, 1, "D") == 0)
+            if (n.compare("D") == 0)
             {
               dim_format.push_back(format_dense);
             }
-            else if (n.compare(0, 2, "CU") == 0)
+            else if (n.compare("CU") == 0)
             {
               dim_format.push_back(format_compressed);
             }
-            else if (n.compare(0, 2, "CN") == 0)
+            else if (n.compare("CN") == 0)
             {
               dim_format.push_back(format_compressednonunique);
             }
-            else if (n.compare(0, 1, "S") == 0)
+            else if (n.compare("S") == 0)
+            {
+              dim_format.push_back(format_singleton);
+            }
+            else
+            {
+              llvm::errs() << "Uncorrect format attribute: " << n << "---\n";
+            }
+            comet_debug() << " dim_format.size(): " << dim_format.size() << " \n";
+          }
+          comet_debug() << " formats_str: " << formats_str << ", dim_format.size(): " << dim_format.size() << " \n";
+        }
+      }
+      else
+      {
+        llvm::errs() << "Unsupported formats: " << formats_str << " (tensor dimes: " << rank_size << ") \n";
+      }
+
+      comet_debug() << " print dim_format: ";
+      for (auto n : dim_format)
+      {
+        comet_debug() << n << " ";
+      }
+      comet_debug() << "\n";
+      return dim_format;
+    }
+
+    // TODO (alokvk2): Not good to have this replicated 3 times. Ideally this is only used for "special" formats (i.e. CSR, COO etc.)
+    // And this converts it to a vector of TAFormatAttrs.
+    std::vector<TensorFormatEnum> getFormats(llvm::StringRef formats_str, int rank_size, MLIRContext* ctx)
+    {
+      auto format_unk =  TensorFormatEnum::UNK;
+      auto format_dense = TensorFormatEnum::D;
+      auto format_compressed = TensorFormatEnum::CU;
+      auto format_compressednonunique = TensorFormatEnum::CN;
+      auto format_singleton = TensorFormatEnum::S;
+      /// read_input_sizes_2D_f64 or read_input_sizes_3D_f64
+      comet_debug() << "\n";
+      std::vector<TensorFormatEnum> dim_format;
+
+      if (rank_size == 2)
+      { /// 2D
+        comet_debug() << " 2D\n";
+        /// Value dim0_format, dim1_format;
+        if (formats_str.compare("CSR") == 0)
+        {
+          dim_format.push_back(format_dense);
+          dim_format.push_back(format_unk);
+          dim_format.push_back(format_compressed);
+          dim_format.push_back(format_unk);
+        }
+        else if (formats_str.compare("DCSR") == 0)
+        {
+          dim_format.push_back(format_compressed);
+          dim_format.push_back(format_unk);
+          dim_format.push_back(format_compressed);
+          dim_format.push_back(format_unk);
+        }
+        else if (formats_str.compare("COO") == 0)
+        { /// COO
+          dim_format.push_back(format_compressednonunique);
+          dim_format.push_back(format_unk);
+          dim_format.push_back(format_singleton);
+          dim_format.push_back(format_unk);
+        }
+        else if (formats_str.compare("ELL") == 0)
+        { /// ELL
+          dim_format.push_back(format_dense);
+          dim_format.push_back(format_dense);
+          dim_format.push_back(format_singleton);
+          dim_format.push_back(format_unk);
+        }
+        else if (formats_str.compare("BCSR") == 0)
+        { /// BCSR
+          dim_format.push_back(format_dense);
+          dim_format.push_back(format_compressed);
+          dim_format.push_back(format_dense);
+          dim_format.push_back(format_dense);
+        }
+        else if (formats_str.compare("CSB") == 0)
+        { /// CSB
+          dim_format.push_back(format_dense);
+          dim_format.push_back(format_dense);
+          dim_format.push_back(format_compressed);
+          dim_format.push_back(format_singleton);
+        }
+        else if (formats_str.find("D") != std::string::npos || formats_str.find("CU") != std::string::npos || formats_str.find("CN") != std::string::npos || formats_str.find("S") != std::string::npos)
+        {
+          std::vector<llvm::StringRef> format_vec = stringSplit(formats_str, ", ");
+          for (auto n : format_vec)
+          {
+            if (n.compare("D") == 0)
+            {
+              dim_format.push_back(format_dense);
+            }
+            else if (n.compare("CU") == 0)
+            {
+              dim_format.push_back(format_compressed);
+            }
+            else if (n.compare("CN") == 0)
+            {
+              dim_format.push_back(format_compressednonunique);
+            }
+            else if (n.compare("S") == 0)
+            {
+              dim_format.push_back(format_singleton);
+            }
+          }
+        }
+        else
+        {
+          llvm::errs() << "Unsupported formats: " << formats_str << " (tensor dimes: " << rank_size << ") \n";
+        }
+      }
+      else if (rank_size == 3)
+      { /// 3D
+        comet_debug() << " 3D\n";
+        /// Value dim0_format, dim1_format, dim2_format;
+        if (formats_str.compare("CSF") == 0)
+        {
+          dim_format.push_back(format_compressed);
+          dim_format.push_back(format_unk);
+          dim_format.push_back(format_compressed);
+          dim_format.push_back(format_unk);
+          dim_format.push_back(format_compressed);
+          dim_format.push_back(format_unk);
+        }
+        else if (formats_str.compare("ModeGeneric") == 0)
+        {
+          dim_format.push_back(format_compressednonunique);
+          dim_format.push_back(format_unk);
+          dim_format.push_back(format_singleton);
+          dim_format.push_back(format_unk);
+          dim_format.push_back(format_dense);
+          dim_format.push_back(format_unk);
+        }
+        else if (formats_str.compare("COO") == 0)
+        { /// COO
+          dim_format.push_back(format_compressednonunique);
+          dim_format.push_back(format_unk);
+          dim_format.push_back(format_singleton);
+          dim_format.push_back(format_unk);
+          dim_format.push_back(format_singleton);
+          dim_format.push_back(format_unk);
+        }
+        else if (formats_str.find("D") != std::string::npos || formats_str.find("CU") != std::string::npos || formats_str.find("CN") != std::string::npos || formats_str.find("S") != std::string::npos)
+        {
+          std::vector<llvm::StringRef> format_vec = stringSplit(formats_str, ", ");
+          comet_debug() << " format_vec.size(): " << format_vec.size() << " \n";
+          /// print_vector<std::string>(format_vec);
+          for (auto n : format_vec)
+          {
+            comet_debug() << "Current format attribute: " << n << "---\n";
+            if (n.compare("D") == 0)
+            {
+              dim_format.push_back(format_dense);
+            }
+            else if (n.compare("CU") == 0)
+            {
+              dim_format.push_back(format_compressed);
+            }
+            else if (n.compare("CN") == 0)
+            {
+              dim_format.push_back(format_compressednonunique);
+            }
+            else if (n.compare("S") == 0)
             {
               dim_format.push_back(format_singleton);
             }
@@ -1193,33 +1347,34 @@ namespace mlir
     /// parent node can get from getUser() function, only one user since tree structure
     void dfsRootOpTree(Value tcRootOp, std::vector<Value> &ret)
     {
-      if (isa<indexTree::IndexTreeIndicesOp>(tcRootOp.getDefiningOp()))
-      {
-        IndexTreeIndicesOp workspaceop = dyn_cast<indexTree::IndexTreeIndicesOp>(tcRootOp.getDefiningOp());
+      return;
+      // if (isa<indexTree::IndexTreeIndicesOp>(tcRootOp.getDefiningOp()))
+      // {
+      //   IndexTreeIndicesOp workspaceop = dyn_cast<indexTree::IndexTreeIndicesOp>(tcRootOp.getDefiningOp());
 
-        comet_debug() << " dfsRootOpTree\n";
-        comet_vdump(workspaceop);
+      //   comet_debug() << " dfsRootOpTree\n";
+      //   comet_vdump(workspaceop);
 
-        unsigned int sz = workspaceop.getChildren().size();
+      //   unsigned int sz = workspaceop.getChildren().size();
 
-        comet_debug() << " " << sz << " ";
-        ret.push_back(workspaceop);
-        comet_debug() << " ";
-        comet_vdump(workspaceop);
+      //   comet_debug() << " " << sz << " ";
+      //   ret.push_back(workspaceop);
+      //   comet_debug() << " ";
+      //   comet_vdump(workspaceop);
 
-        for (unsigned int i = 0; i < sz; i++)
-        {
-          Value t = workspaceop.getChildren()[i];
-          dfsRootOpTree(t, ret);
-        }
-      }
-      else if (isa<indexTree::IndexTreeComputeOp>(tcRootOp.getDefiningOp()))
-      {
-        indexTree::IndexTreeComputeOp leafop = dyn_cast<indexTree::IndexTreeComputeOp>(tcRootOp.getDefiningOp());
-        /// comet_debug() <<  " dfsRootOpTree\n";
-        comet_vdump(leafop);
-        ret.push_back(leafop);
-      }
+      //   for (unsigned int i = 0; i < sz; i++)
+      //   {
+      //     Value t = workspaceop.getChildren()[i];
+      //     dfsRootOpTree(t, ret);
+      //   }
+      // }
+      // else if (isa<indexTree::IndexTreeComputeOp>(tcRootOp.getDefiningOp()))
+      // {
+      //   indexTree::IndexTreeComputeOp leafop = dyn_cast<indexTree::IndexTreeComputeOp>(tcRootOp.getDefiningOp());
+      //   /// comet_debug() <<  " dfsRootOpTree\n";
+      //   comet_vdump(leafop);
+      //   ret.push_back(leafop);
+      // }
     }
 
     void getAncestorsWp(Value op, std::vector<Value> &ret /* output ancestors*/, std::vector<Value> &dfsOps)
@@ -1385,99 +1540,105 @@ namespace mlir
                                     std::vector<std::vector<int>> &opPerms,
                                     std::vector<std::vector<bool>> &inputOutputMapping)
     {
-      indexTree::IndexTreeComputeRHSOp itComputeOp_rhs = dyn_cast<indexTree::IndexTreeComputeRHSOp>(computeOp.getDefiningOp()->getOperand(0).getDefiningOp());
-      ArrayAttr opFormatsArrayAttr_rhs = itComputeOp_rhs.getAllFormats();
-      ArrayAttr opPermsArrayAttr_rhs = itComputeOp_rhs.getAllPerms();
-      indexTree::IndexTreeComputeLHSOp itComputeOp_lhs = dyn_cast<indexTree::IndexTreeComputeLHSOp>(computeOp.getDefiningOp()->getOperand(1).getDefiningOp());
-      ArrayAttr opFormatsArrayAttr_lhs = itComputeOp_lhs.getAllFormats();
-      ArrayAttr opPermsArrayAttr_lhs = itComputeOp_lhs.getAllPerms();
-      assert(opFormatsArrayAttr_rhs.size() == opPermsArrayAttr_rhs.size() && "not equal RHS formats size with perms size\n");
-      assert(opFormatsArrayAttr_lhs.size() == opPermsArrayAttr_lhs.size() && "not equal LHS formats size with perms size\n");
+      return;
+      // indexTree::IndexTreeComputeRHSOp itComputeOp_rhs = dyn_cast<indexTree::IndexTreeComputeRHSOp>(computeOp.getDefiningOp()->getOperand(0).getDefiningOp());
+      // ArrayAttr opFormatsArrayAttr_rhs = itComputeOp_rhs.getAllFormats();
+      // ArrayAttr opPermsArrayAttr_rhs = itComputeOp_rhs.getAllPerms();
+      // indexTree::IndexTreeComputeLHSOp itComputeOp_lhs = dyn_cast<indexTree::IndexTreeComputeLHSOp>(computeOp.getDefiningOp()->getOperand(1).getDefiningOp());
+      // ArrayAttr opFormatsArrayAttr_lhs = itComputeOp_lhs.getAllFormats();
+      // ArrayAttr opPermsArrayAttr_lhs = itComputeOp_lhs.getAllPerms();
+      // assert(opFormatsArrayAttr_rhs.size() == opPermsArrayAttr_rhs.size() && "not equal RHS formats size with perms size\n");
+      // assert(opFormatsArrayAttr_lhs.size() == opPermsArrayAttr_lhs.size() && "not equal LHS formats size with perms size\n");
 
-      /// Get output format, vector of vector
-      /// Convert ArrayAttr into
-      comet_debug() << "Start printing opFormats_rhs\n";
-      std::vector<std::vector<std::string>> opFormats_rhs = convertArrayAttrStrTo2DVector(opFormatsArrayAttr_rhs);
-      comet_debug() << "End printing opFormats_rhs\n";
-      std::vector<std::vector<int>> opPerms_rhs = convertArrayAttrIntTo2DVector(opPermsArrayAttr_rhs);
-      std::vector<std::vector<bool>> inputMapping = createInputOutputMapping(opPermsArrayAttr_rhs, true);
+      // /// Get output format, vector of vector
+      // /// Convert ArrayAttr into
+      // comet_debug() << "Start printing opFormats_rhs\n";
+      // std::vector<std::vector<std::string>> opFormats_rhs = convertArrayAttrStrTo2DVector(opFormatsArrayAttr_rhs);
+      // comet_debug() << "End printing opFormats_rhs\n";
+      // std::vector<std::vector<int>> opPerms_rhs = convertArrayAttrIntTo2DVector(opPermsArrayAttr_rhs);
+      // std::vector<std::vector<bool>> inputMapping = createInputOutputMapping(opPermsArrayAttr_rhs, true);
 
-      comet_debug() << "Start printing opFormats_lhs\n";
-      std::vector<std::vector<std::string>> opFormats_lhs = convertArrayAttrStrTo2DVector(opFormatsArrayAttr_lhs);
-      comet_debug() << "End printing opFormats_lhs\n";
-      std::vector<std::vector<int>> opPerms_lhs = convertArrayAttrIntTo2DVector(opPermsArrayAttr_lhs);
-      std::vector<std::vector<bool>> outputMapping = createInputOutputMapping(opPermsArrayAttr_lhs, false);
+      // comet_debug() << "Start printing opFormats_lhs\n";
+      // std::vector<std::vector<std::string>> opFormats_lhs = convertArrayAttrStrTo2DVector(opFormatsArrayAttr_lhs);
+      // comet_debug() << "End printing opFormats_lhs\n";
+      // std::vector<std::vector<int>> opPerms_lhs = convertArrayAttrIntTo2DVector(opPermsArrayAttr_lhs);
+      // std::vector<std::vector<bool>> outputMapping = createInputOutputMapping(opPermsArrayAttr_lhs, false);
 
-      opFormats = opFormats_rhs;
-      opFormats.insert(opFormats.end(), opFormats_lhs.begin(), opFormats_lhs.end());
-      opPerms = opPerms_rhs;
-      opPerms.insert(opPerms.end(), opPerms_lhs.begin(), opPerms_lhs.end());
-      inputOutputMapping = inputMapping;
-      inputOutputMapping.insert(inputOutputMapping.end(), outputMapping.begin(), outputMapping.end());
+      // opFormats = opFormats_rhs;
+      // opFormats.insert(opFormats.end(), opFormats_lhs.begin(), opFormats_lhs.end());
+      // opPerms = opPerms_rhs;
+      // opPerms.insert(opPerms.end(), opPerms_lhs.begin(), opPerms_lhs.end());
+      // inputOutputMapping = inputMapping;
+      // inputOutputMapping.insert(inputOutputMapping.end(), outputMapping.begin(), outputMapping.end());
     }
 
     /// Get the formats of the itCompute op
     void getFormatsOfComputeOp(Value computeOp, std::vector<std::vector<std::string>> &opFormats)
     {
-      indexTree::IndexTreeComputeRHSOp itComputeOp_rhs = dyn_cast<indexTree::IndexTreeComputeRHSOp>(computeOp.getDefiningOp()->getOperand(0).getDefiningOp());
-      ArrayAttr opFormatsArrayAttr_rhs = itComputeOp_rhs.getAllFormats();
-      indexTree::IndexTreeComputeLHSOp itComputeOp_lhs = dyn_cast<indexTree::IndexTreeComputeLHSOp>(computeOp.getDefiningOp()->getOperand(1).getDefiningOp());
-      ArrayAttr opFormatsArrayAttr_lhs = itComputeOp_lhs.getAllFormats();
+      return;
+      // indexTree::IndexTreeComputeRHSOp itComputeOp_rhs = dyn_cast<indexTree::IndexTreeComputeRHSOp>(computeOp.getDefiningOp()->getOperand(0).getDefiningOp());
+      // ArrayAttr opFormatsArrayAttr_rhs = itComputeOp_rhs.getAllFormats();
+      // indexTree::IndexTreeComputeLHSOp itComputeOp_lhs = dyn_cast<indexTree::IndexTreeComputeLHSOp>(computeOp.getDefiningOp()->getOperand(1).getDefiningOp());
+      // ArrayAttr opFormatsArrayAttr_lhs = itComputeOp_lhs.getAllFormats();
 
-      /// Get output format, vector of vector
-      /// Convert ArrayAttr into
-      std::vector<std::vector<std::string>> opFormats_rhs = convertArrayAttrStrTo2DVector(opFormatsArrayAttr_rhs);
-      std::vector<std::vector<std::string>> opFormats_lhs = convertArrayAttrStrTo2DVector(opFormatsArrayAttr_lhs);
+      // /// Get output format, vector of vector
+      // /// Convert ArrayAttr into
+      // std::vector<std::vector<std::string>> opFormats_rhs = convertArrayAttrStrTo2DVector(opFormatsArrayAttr_rhs);
+      // std::vector<std::vector<std::string>> opFormats_lhs = convertArrayAttrStrTo2DVector(opFormatsArrayAttr_lhs);
 
-      opFormats = opFormats_rhs;
-      opFormats.insert(opFormats.end(), opFormats_lhs.begin(), opFormats_lhs.end());
+      // opFormats = opFormats_rhs;
+      // opFormats.insert(opFormats.end(), opFormats_lhs.begin(), opFormats_lhs.end());
     }
 
     /// Get the rhs formats of the itCompute op
     void getRHSFormatsOfComputeOp(Value computeOp, std::vector<std::vector<std::string>> &opFormats)
     {
-      indexTree::IndexTreeComputeRHSOp itComputeOp_rhs = dyn_cast<indexTree::IndexTreeComputeRHSOp>(computeOp.getDefiningOp()->getOperand(0).getDefiningOp());
-      ArrayAttr opFormatsArrayAttr_rhs = itComputeOp_rhs.getAllFormats();
+      return;
+      // indexTree::IndexTreeComputeRHSOp itComputeOp_rhs = dyn_cast<indexTree::IndexTreeComputeRHSOp>(computeOp.getDefiningOp()->getOperand(0).getDefiningOp());
+      // ArrayAttr opFormatsArrayAttr_rhs = itComputeOp_rhs.getAllFormats();
 
-      /// Get output format, vector of vector
-      /// Convert ArrayAttr into
-      std::vector<std::vector<std::string>> opFormats_rhs = convertArrayAttrStrTo2DVector(opFormatsArrayAttr_rhs);
+      // /// Get output format, vector of vector
+      // /// Convert ArrayAttr into
+      // std::vector<std::vector<std::string>> opFormats_rhs = convertArrayAttrStrTo2DVector(opFormatsArrayAttr_rhs);
 
-      opFormats = opFormats_rhs;
+      // opFormats = opFormats_rhs;
     }
 
     /// Get the LHS formats of the itCompute op
     void getLHSFormatsOfComputeOp(Value computeOp, std::vector<std::vector<std::string>> &opFormats)
     {
-      indexTree::IndexTreeComputeLHSOp itComputeOp_lhs = dyn_cast<indexTree::IndexTreeComputeLHSOp>(computeOp.getDefiningOp()->getOperand(1).getDefiningOp());
-      ArrayAttr opFormatsArrayAttr_lhs = itComputeOp_lhs.getAllFormats();
-      std::vector<std::vector<std::string>> opFormats_lhs = convertArrayAttrStrTo2DVector(opFormatsArrayAttr_lhs);
-      opFormats = opFormats_lhs;
+      return;
+      // indexTree::IndexTreeComputeLHSOp itComputeOp_lhs = dyn_cast<indexTree::IndexTreeComputeLHSOp>(computeOp.getDefiningOp()->getOperand(1).getDefiningOp());
+      // ArrayAttr opFormatsArrayAttr_lhs = itComputeOp_lhs.getAllFormats();
+      // std::vector<std::vector<std::string>> opFormats_lhs = convertArrayAttrStrTo2DVector(opFormatsArrayAttr_lhs);
+      // opFormats = opFormats_lhs;
     }
 
     /// Get the input tensors of the itCompute op
     void getInputTensorsOfComputeOp(Value computeOp, std::vector<Value> &inputTensors /* output */)
     {
+      return;
       /// indexTree::IndexTreeComputeOp itComputeOp = dyn_cast<indexTree::IndexTreeComputeOp>(computeOp.getDefiningOp());
-      indexTree::IndexTreeComputeRHSOp itComputeOp_rhs = dyn_cast<indexTree::IndexTreeComputeRHSOp>(computeOp.getDefiningOp()->getOperand(0).getDefiningOp());
-      comet_debug() << " ";
-      comet_vdump(itComputeOp_rhs);
-      for (unsigned int i = 0; i < itComputeOp_rhs.getOperation()->getNumOperands(); i++)
-      {
-        comet_debug() << " ";
-        comet_vdump(itComputeOp_rhs.getOperation()->getOperand(i));
-        inputTensors.push_back(itComputeOp_rhs.getOperation()->getOperand(i));
-      }
+      // indexTree::IndexTreeComputeRHSOp itComputeOp_rhs = dyn_cast<indexTree::IndexTreeComputeRHSOp>(computeOp.getDefiningOp()->getOperand(0).getDefiningOp());
+      // comet_debug() << " ";
+      // comet_vdump(itComputeOp_rhs);
+      // for (unsigned int i = 0; i < itComputeOp_rhs.getOperation()->getNumOperands(); i++)
+      // {
+      //   comet_debug() << " ";
+      //   comet_vdump(itComputeOp_rhs.getOperation()->getOperand(i));
+      //   inputTensors.push_back(itComputeOp_rhs.getOperation()->getOperand(i));
+      // }
     }
 
     /// Get the output tensors of the itCompute op
     void getOutputTensorsOfComputeOp(Value computeOp, std::vector<Value> &outputTensors /* output */)
     {
-      indexTree::IndexTreeComputeLHSOp itComputeOp_lhs = dyn_cast<indexTree::IndexTreeComputeLHSOp>(computeOp.getDefiningOp()->getOperand(1).getDefiningOp());
-      for (unsigned int i = 0; i < itComputeOp_lhs.getOperation()->getNumOperands(); i++)
-      {
-        outputTensors.push_back(itComputeOp_lhs.getOperation()->getOperand(i));
-      }
+      return;
+      // indexTree::IndexTreeComputeLHSOp itComputeOp_lhs = dyn_cast<indexTree::IndexTreeComputeLHSOp>(computeOp.getDefiningOp()->getOperand(1).getDefiningOp());
+      // for (unsigned int i = 0; i < itComputeOp_lhs.getOperation()->getNumOperands(); i++)
+      // {
+      //   outputTensors.push_back(itComputeOp_lhs.getOperation()->getOperand(i));
+      // }
     }
 
     /// Get indices in current WorkspaceOp cur_op
@@ -1488,186 +1649,187 @@ namespace mlir
                         std::vector<unsigned int> &ids /* output */,
                         std::vector<std::string> &formats /* output */)
     {
-      /// For each indices, find in each leaf, which tensor, the corresponding format
-      /// If in all tensors, the formats of the index are D, then D
-      ///                    If only one Sparse, then sparse
-      comet_debug() << " getFormatsInfo:Start Current op\n";
-      comet_vdump(cur_op);
-      comet_debug() << " getFormatsInfo:indices.size(): " << indices.size() << "\n";
-      for (unsigned long i = 0; i < indices.size(); i++)
-      {
-        comet_debug() << " getFormatsInfo:indices[" << i << "]: " << indices[i] << "\n";
-        /// Info for each index
-        std::string format;
-        Value tensor;
-        unsigned int id;
-        bool isSet = false;
+      return;
+//       /// For each indices, find in each leaf, which tensor, the corresponding format
+//       /// If in all tensors, the formats of the index are D, then D
+//       ///                    If only one Sparse, then sparse
+//       comet_debug() << " getFormatsInfo:Start Current op\n";
+//       comet_vdump(cur_op);
+//       comet_debug() << " getFormatsInfo:indices.size(): " << indices.size() << "\n";
+//       for (unsigned long i = 0; i < indices.size(); i++)
+//       {
+//         comet_debug() << " getFormatsInfo:indices[" << i << "]: " << indices[i] << "\n";
+//         /// Info for each index
+//         std::string format;
+//         Value tensor;
+//         unsigned int id;
+//         bool isSet = false;
 
-        std::vector<std::string> formats_leafs;
-        std::vector<Value> tensors_leafs;
-        std::vector<unsigned int> ids_leafs;
+//         std::vector<std::string> formats_leafs;
+//         std::vector<Value> tensors_leafs;
+//         std::vector<unsigned int> ids_leafs;
 
-        for (unsigned long j = 0; j < leafs.size(); j++)
-        {
-          /// Info for each index in leaf[j]
-          comet_debug() << " getFormatsInfo:LeafOp: ";
-          comet_vdump(leafs[j]);
-          std::string format_in_leaf;
-          Value tensor_in_leaf;
-          unsigned int id_in_leaf;
-          bool isSetInLeaf = false;
+//         for (unsigned long j = 0; j < leafs.size(); j++)
+//         {
+//           /// Info for each index in leaf[j]
+//           comet_debug() << " getFormatsInfo:LeafOp: ";
+//           comet_vdump(leafs[j]);
+//           std::string format_in_leaf;
+//           Value tensor_in_leaf;
+//           unsigned int id_in_leaf;
+//           bool isSetInLeaf = false;
 
-          /// get All perms and formats info
-          if (indexTree::IndexTreeComputeOp leafop = dyn_cast<mlir::indexTree::IndexTreeComputeOp>(leafs[j].getDefiningOp()))
-          {
-            comet_debug() << " getFormatsInfo:leafs[" << j << "] is computeOp\n";
-            std::vector<std::vector<std::string>> allFormats;
-            std::vector<std::vector<int>> allPerms;
-            std::vector<std::vector<bool>> inputOutputMapping;
-            OpBuilder builder(leafop);
-            getFormatsPermsOfComputeOp(leafop, allFormats, allPerms, inputOutputMapping);
+//           /// get All perms and formats info
+//           if (indexTree::IndexTreeComputeOp leafop = dyn_cast<mlir::indexTree::IndexTreeComputeOp>(leafs[j].getDefiningOp()))
+//           {
+//             comet_debug() << " getFormatsInfo:leafs[" << j << "] is computeOp\n";
+//             std::vector<std::vector<std::string>> allFormats;
+//             std::vector<std::vector<int>> allPerms;
+//             std::vector<std::vector<bool>> inputOutputMapping;
+//             OpBuilder builder(leafop);
+//             getFormatsPermsOfComputeOp(leafop, allFormats, allPerms, inputOutputMapping);
 
-            comet_debug() << " getFormatsInfo:Allformats allFormats.size(): " << allFormats.size() << "\n";
-            for (auto m : allFormats)
-            {
-              comet_debug() << " ";
-              for (auto n : m)
-              {
-                comet_debug() << n << " ";
-              }
-              comet_debug() << "\n";
-            }
+//             comet_debug() << " getFormatsInfo:Allformats allFormats.size(): " << allFormats.size() << "\n";
+//             for (auto m : allFormats)
+//             {
+//               comet_debug() << " ";
+//               for (auto n : m)
+//               {
+//                 comet_debug() << n << " ";
+//               }
+//               comet_debug() << "\n";
+//             }
 
-            std::vector<Value> leafop_inputTensors;
-            getInputTensorsOfComputeOp(leafop, leafop_inputTensors /* output */);
-            comet_debug() << " getFormatsInfo:leafop_inputTensors.size(): " << leafop_inputTensors.size() << "\n";
+//             std::vector<Value> leafop_inputTensors;
+//             getInputTensorsOfComputeOp(leafop, leafop_inputTensors);
+//             comet_debug() << " getFormatsInfo:leafop_inputTensors.size(): " << leafop_inputTensors.size() << "\n";
 
-            std::vector<Value> leafop_outputTensors;
-            getOutputTensorsOfComputeOp(leafop, leafop_outputTensors /* output */);
-            comet_debug() << " getFormatsInfo:leafop_outputTensors.size(): " << leafop_outputTensors.size() << "\n";
+//             std::vector<Value> leafop_outputTensors;
+//             getOutputTensorsOfComputeOp(leafop, leafop_outputTensors);
+//             comet_debug() << " getFormatsInfo:leafop_outputTensors.size(): " << leafop_outputTensors.size() << "\n";
 
-            std::vector<Value> leafop_tensors = leafop_inputTensors;
-            leafop_tensors.insert(leafop_tensors.end(), leafop_outputTensors.begin(), leafop_outputTensors.end());
-#ifdef DEBUG_MODE_UTILS
-            comet_debug() << " getFormatsInfo:leafop_tensors.size(): " << leafop_tensors.size() << "\n";
-            for (auto n : leafop_tensors)
-            {
-              comet_debug() << " ";
-              comet_vdump(n);
-            }
-#endif
-            /// Check if this index is in this leaf's perms
+//             std::vector<Value> leafop_tensors = leafop_inputTensors;
+//             leafop_tensors.insert(leafop_tensors.end(), leafop_outputTensors.begin(), leafop_outputTensors.end());
+// #ifdef DEBUG_MODE_UTILS
+//             comet_debug() << " getFormatsInfo:leafop_tensors.size(): " << leafop_tensors.size() << "\n";
+//             for (auto n : leafop_tensors)
+//             {
+//               comet_debug() << " ";
+//               comet_vdump(n);
+//             }
+// #endif
+//             /// Check if this index is in this leaf's perms
 
-            std::vector<std::string> formats_local;
-            std::vector<Value> tensors_local;
-            std::vector<unsigned int> ids_local;
-            std::vector<bool> rhs_vs_lhs;
-            /// This leafOp contain multiple tensors.
-            comet_debug() << " getFormatsInfo:allPerms.size()" << allPerms.size() << "\n";
-            for (unsigned long k = 0; k < allPerms.size(); k++)
-            {
-              comet_debug() << " getFormatsInfo:allPerms[" << k << "].size(): " << allPerms[k].size() << ", print allPerms[" << k << "]: ";
-              print_vector<int>(allPerms[k]);
-              comet_debug() << " getFormatsInfo:indices[" << i << "]: " << indices[i] << "\n";
-              unsigned int idx = findIndexInVector(allPerms[k], indices[i]);
-              comet_debug() << " getFormatsInfo:idx: " << idx << ", allPerms[" << k << "].size(): " << allPerms[k].size() << "\n";
-              if (idx < allPerms[k].size())
-              { /// In tensor k
-                comet_debug() << " getFormatsInfo:AddingLocalFormat[" << k << "][" << idx << "]: " << allFormats[k][idx] << " ";
-                comet_vdump(leafop_tensors[k]);
-                formats_local.push_back(allFormats[k][idx]);
-                tensors_local.push_back(leafop_tensors[k]);
-                ids_local.push_back(idx);
-                rhs_vs_lhs.push_back(inputOutputMapping[k][idx]);
-              }
-            }
+//             std::vector<std::string> formats_local;
+//             std::vector<Value> tensors_local;
+//             std::vector<unsigned int> ids_local;
+//             std::vector<bool> rhs_vs_lhs;
+//             /// This leafOp contain multiple tensors.
+//             comet_debug() << " getFormatsInfo:allPerms.size()" << allPerms.size() << "\n";
+//             for (unsigned long k = 0; k < allPerms.size(); k++)
+//             {
+//               comet_debug() << " getFormatsInfo:allPerms[" << k << "].size(): " << allPerms[k].size() << ", print allPerms[" << k << "]: ";
+//               print_vector<int>(allPerms[k]);
+//               comet_debug() << " getFormatsInfo:indices[" << i << "]: " << indices[i] << "\n";
+//               unsigned int idx = findIndexInVector(allPerms[k], indices[i]);
+//               comet_debug() << " getFormatsInfo:idx: " << idx << ", allPerms[" << k << "].size(): " << allPerms[k].size() << "\n";
+//               if (idx < allPerms[k].size())
+//               { /// In tensor k
+//                 comet_debug() << " getFormatsInfo:AddingLocalFormat[" << k << "][" << idx << "]: " << allFormats[k][idx] << " ";
+//                 comet_vdump(leafop_tensors[k]);
+//                 formats_local.push_back(allFormats[k][idx]);
+//                 tensors_local.push_back(leafop_tensors[k]);
+//                 ids_local.push_back(idx);
+//                 rhs_vs_lhs.push_back(inputOutputMapping[k][idx]);
+//               }
+//             }
 
-            comet_debug() << " getFormatsInfo:formats_local.size(): " << formats_local.size() << " \n";
-            for (unsigned long k = 0; k < formats_local.size(); k++)
-            {
-              comet_debug() << " getFormatsInfo:formats_local[k]:" << formats_local[k] << " " << ids_local[k] << " ";
-              comet_vdump(tensors_local[k]);
-            }
+//             comet_debug() << " getFormatsInfo:formats_local.size(): " << formats_local.size() << " \n";
+//             for (unsigned long k = 0; k < formats_local.size(); k++)
+//             {
+//               comet_debug() << " getFormatsInfo:formats_local[k]:" << formats_local[k] << " " << ids_local[k] << " ";
+//               comet_vdump(tensors_local[k]);
+//             }
 
-            /// analyze _local arrays, to get final formats, tensors, idx
-            if (formats_local.size() > 0)
-            {
-              isSetInLeaf = true;
-              format_in_leaf = formats_local[0];
-              tensor_in_leaf = tensors_local[0];
-              id_in_leaf = ids_local[0];
+//             /// analyze _local arrays, to get final formats, tensors, idx
+//             if (formats_local.size() > 0)
+//             {
+//               isSetInLeaf = true;
+//               format_in_leaf = formats_local[0];
+//               tensor_in_leaf = tensors_local[0];
+//               id_in_leaf = ids_local[0];
 
-              for (unsigned long k = 1; k < formats_local.size(); k++)
-              {
-                if (format_in_leaf.compare(0, 1, "D") == 0 && formats_local[k].compare(0, 1, "D") != 0 && rhs_vs_lhs[k])
-                /// if the next format in the local format is not dense and not output
-                /// rhs_vs_lhs determines if the format comes from input (lhs) or output (rhs)
-                /// C[i,j] =  A[i,k] * B[k, j] -> i is in both input A and output C
-                /// -> j is in both input B and output C
-                /// -> k is in both inputs A and B
-                /// index format information stores in formats_local
-                {
-                  format_in_leaf = formats_local[k];
-                  tensor_in_leaf = tensors_local[k];
-                  id_in_leaf = ids_local[k];
-                  break; /// Get the first sparse case
-                }
-              }
-            }
+//               for (unsigned long k = 1; k < formats_local.size(); k++)
+//               {
+//                 if (format_in_leaf.compare(0, 1, "D") == 0 && formats_local[k].compare(0, 1, "D") != 0 && rhs_vs_lhs[k])
+//                 /// if the next format in the local format is not dense and not output
+//                 /// rhs_vs_lhs determines if the format comes from input (lhs) or output (rhs)
+//                 /// C[i,j] =  A[i,k] * B[k, j] -> i is in both input A and output C
+//                 /// -> j is in both input B and output C
+//                 /// -> k is in both inputs A and B
+//                 /// index format information stores in formats_local
+//                 {
+//                   format_in_leaf = formats_local[k];
+//                   tensor_in_leaf = tensors_local[k];
+//                   id_in_leaf = ids_local[k];
+//                   break; /// Get the first sparse case
+//                 }
+//               }
+//             }
 
-          } /// if(indexTree::IndexTreeComputeOp leafop
+//           } /// if(indexTree::IndexTreeComputeOp leafop
 
-          if (isSetInLeaf)
-          {
-            comet_debug() << " getFormatsInfo:isSetInLeaf: " << isSetInLeaf << ", format_in_leaf: " << format_in_leaf << ", id_in_leaf: " << id_in_leaf << ", tensor: ";
-            comet_vdump(tensor_in_leaf);
-            formats_leafs.push_back(format_in_leaf);
-            tensors_leafs.push_back(tensor_in_leaf);
-            ids_leafs.push_back(id_in_leaf);
-          }
+//           if (isSetInLeaf)
+//           {
+//             comet_debug() << " getFormatsInfo:isSetInLeaf: " << isSetInLeaf << ", format_in_leaf: " << format_in_leaf << ", id_in_leaf: " << id_in_leaf << ", tensor: ";
+//             comet_vdump(tensor_in_leaf);
+//             formats_leafs.push_back(format_in_leaf);
+//             tensors_leafs.push_back(tensor_in_leaf);
+//             ids_leafs.push_back(id_in_leaf);
+//           }
 
-        } /// for(auto j = 0; j < leafs.size(); j++){
+//         } /// for(auto j = 0; j < leafs.size(); j++){
 
-        comet_debug() << " getFormatsInfo:formats_leafs.size(): " << formats_leafs.size() << "\n";
-        for ([[maybe_unused]] unsigned long k = 0; k < formats_leafs.size(); k++)
-        {
-          comet_debug() << " getFormatsInfo:formats_leafs[k]:" << formats_leafs[k] << "\n";
-        }
+//         comet_debug() << " getFormatsInfo:formats_leafs.size(): " << formats_leafs.size() << "\n";
+//         for ([[maybe_unused]] unsigned long k = 0; k < formats_leafs.size(); k++)
+//         {
+//           comet_debug() << " getFormatsInfo:formats_leafs[k]:" << formats_leafs[k] << "\n";
+//         }
 
-        /// analyze the _leafs info to get the current index format, tensor, id information
-        for (unsigned long j = 0; j < formats_leafs.size(); j++)
-        {
-          if (j == 0)
-          {
-            format = formats_leafs[j];
-            tensor = tensors_leafs[j];
-            id = ids_leafs[j];
-            isSet = true;
-          }
-          else
-          {
-            if (formats_leafs[j].compare(0, 1, "D") != 0)
-            { /// not D
-              format = formats_leafs[j];
-              tensor = tensors_leafs[j];
-              id = ids_leafs[j];
-              isSet = true;
-              break; /// Get the first sparse case
-            }
-          }
-        }
+//         /// analyze the _leafs info to get the current index format, tensor, id information
+//         for (unsigned long j = 0; j < formats_leafs.size(); j++)
+//         {
+//           if (j == 0)
+//           {
+//             format = formats_leafs[j];
+//             tensor = tensors_leafs[j];
+//             id = ids_leafs[j];
+//             isSet = true;
+//           }
+//           else
+//           {
+//             if (formats_leafs[j].compare(0, 1, "D") != 0)
+//             { /// not D
+//               format = formats_leafs[j];
+//               tensor = tensors_leafs[j];
+//               id = ids_leafs[j];
+//               isSet = true;
+//               break; /// Get the first sparse case
+//             }
+//           }
+//         }
 
-        if (isSet)
-        {
-          comet_debug() << " getFormatsInfo:EndFormat: " << format << ", id: " << id << ", tensor: ";
-          comet_vdump(tensor);
+//         if (isSet)
+//         {
+//           comet_debug() << " getFormatsInfo:EndFormat: " << format << ", id: " << id << ", tensor: ";
+//           comet_vdump(tensor);
 
-          formats.push_back(format);
-          tensors.push_back(tensor);
-          ids.push_back(id);
-        }
+//           formats.push_back(format);
+//           tensors.push_back(tensor);
+//           ids.push_back(id);
+//         }
 
-      } /// for(auto i = 0; i < indices.size(); i++){
+//       } /// for(auto i = 0; i < indices.size(); i++){
     }
 
     /// Find leaves of tcRootOp in the Index Tree (dfsOp).
@@ -1681,36 +1843,37 @@ namespace mlir
                    std::vector<Value> &dfsOps,
                    std::vector<Value> &ret /* output leaves */)
     {
-      std::vector<std::vector<Value>> allAncestors(dfsOps.size());
-      for (unsigned int i = 0; i < dfsOps.size(); i++)
-      {
-        if (IndexTreeComputeOp cur_op = dyn_cast<IndexTreeComputeOp>(dfsOps[i].getDefiningOp()))
-        {
-          getAncestorsWp(dfsOps[i], allAncestors[i] /* output ancestors */, dfsOps);
-          comet_debug() << " print allAncestors[" << i << "]: ";
-          print_vector_value(allAncestors[i]);
-        }
-      }
+      return;
+      // std::vector<std::vector<Value>> allAncestors(dfsOps.size());
+      // for (unsigned int i = 0; i < dfsOps.size(); i++)
+      // {
+      //   if (IndexTreeComputeOp cur_op = dyn_cast<IndexTreeComputeOp>(dfsOps[i].getDefiningOp()))
+      //   {
+      //     getAncestorsWp(dfsOps[i], allAncestors[i] /* output ancestors */, dfsOps);
+      //     comet_debug() << " print allAncestors[" << i << "]: ";
+      //     print_vector_value(allAncestors[i]);
+      //   }
+      // }
 
-      /// Each wp op in which tensors
-      if (IndexTreeIndicesOp cur_op = dyn_cast<IndexTreeIndicesOp>(tcRootOp.getDefiningOp()))
-      {
-        comet_debug() << " ";
-        comet_vdump(tcRootOp);
-        for (unsigned int j = 0; j < dfsOps.size(); j++)
-        {
-          auto idx = findIndexInVector_Value(allAncestors[j], tcRootOp);
-          if (idx < allAncestors[j].size())
-          {
-            if (indexTree::IndexTreeComputeOp cur_op = dyn_cast<IndexTreeComputeOp>(dfsOps[j].getDefiningOp()))
-            {
-              ret.push_back(dfsOps[j]);
-              comet_debug() << " ";
-              comet_vdump(dfsOps[j]);
-            }
-          }
-        }
-      }
+      // /// Each wp op in which tensors
+      // if (IndexTreeIndicesOp cur_op = dyn_cast<IndexTreeIndicesOp>(tcRootOp.getDefiningOp()))
+      // {
+      //   comet_debug() << " ";
+      //   comet_vdump(tcRootOp);
+      //   for (unsigned int j = 0; j < dfsOps.size(); j++)
+      //   {
+      //     auto idx = findIndexInVector_Value(allAncestors[j], tcRootOp);
+      //     if (idx < allAncestors[j].size())
+      //     {
+      //       if (indexTree::IndexTreeComputeOp cur_op = dyn_cast<IndexTreeComputeOp>(dfsOps[j].getDefiningOp()))
+      //       {
+      //         ret.push_back(dfsOps[j]);
+      //         comet_debug() << " ";
+      //         comet_vdump(dfsOps[j]);
+      //       }
+      //     }
+      //   }
+      // }
     }
 
     /// new version for new children ops
@@ -1753,61 +1916,65 @@ namespace mlir
     /// Get the output tensors of the itCompute op
     void getTensorsOfComputeOp(Value computeOp, std::vector<Value> &tensors)
     {
-      indexTree::IndexTreeComputeRHSOp itComputeOp_rhs = dyn_cast<indexTree::IndexTreeComputeRHSOp>(computeOp.getDefiningOp()->getOperand(0).getDefiningOp());
-      comet_debug() << " ";
-      comet_vdump(itComputeOp_rhs);
-      for (unsigned int i = 0; i < itComputeOp_rhs.getOperation()->getNumOperands(); i++)
-      {
-        comet_debug() << " ";
-        comet_vdump(itComputeOp_rhs.getOperation()->getOperand(i));
-        tensors.push_back(itComputeOp_rhs.getOperation()->getOperand(i));
-      }
-      indexTree::IndexTreeComputeLHSOp itComputeOp_lhs = dyn_cast<indexTree::IndexTreeComputeLHSOp>(computeOp.getDefiningOp()->getOperand(1).getDefiningOp());
-      for (unsigned int i = 0; i < itComputeOp_lhs.getOperation()->getNumOperands(); i++)
-      {
-        tensors.push_back(itComputeOp_lhs.getOperation()->getOperand(i));
-      }
+      return;
+      // indexTree::IndexTreeComputeRHSOp itComputeOp_rhs = dyn_cast<indexTree::IndexTreeComputeRHSOp>(computeOp.getDefiningOp()->getOperand(0).getDefiningOp());
+      // comet_debug() << " ";
+      // comet_vdump(itComputeOp_rhs);
+      // for (unsigned int i = 0; i < itComputeOp_rhs.getOperation()->getNumOperands(); i++)
+      // {
+      //   comet_debug() << " ";
+      //   comet_vdump(itComputeOp_rhs.getOperation()->getOperand(i));
+      //   tensors.push_back(itComputeOp_rhs.getOperation()->getOperand(i));
+      // }
+      // indexTree::IndexTreeComputeLHSOp itComputeOp_lhs = dyn_cast<indexTree::IndexTreeComputeLHSOp>(computeOp.getDefiningOp()->getOperand(1).getDefiningOp());
+      // for (unsigned int i = 0; i < itComputeOp_lhs.getOperation()->getNumOperands(); i++)
+      // {
+      //   tensors.push_back(itComputeOp_lhs.getOperation()->getOperand(i));
+      // }
     }
 
     /// Get the perms and formats of the itCompute op
     void getRHSPermsOfComputeOp(Value computeOp, std::vector<std::vector<int>> &opPerms)
     {
-      indexTree::IndexTreeComputeRHSOp itComputeOp_rhs = dyn_cast<indexTree::IndexTreeComputeRHSOp>(computeOp.getDefiningOp()->getOperand(0).getDefiningOp());
-      ArrayAttr opPermsArrayAttr_rhs = itComputeOp_rhs.getAllPerms();
-      /// Get output format, vector of vector
-      /// Convert ArrayAttr into
-      std::vector<std::vector<int>> opPerms_rhs = convertArrayAttrIntTo2DVector(opPermsArrayAttr_rhs);
-      opPerms = opPerms_rhs;
+      return;
+      // indexTree::IndexTreeComputeRHSOp itComputeOp_rhs = dyn_cast<indexTree::IndexTreeComputeRHSOp>(computeOp.getDefiningOp()->getOperand(0).getDefiningOp());
+      // ArrayAttr opPermsArrayAttr_rhs = itComputeOp_rhs.getAllPerms();
+      // /// Get output format, vector of vector
+      // /// Convert ArrayAttr into
+      // std::vector<std::vector<int>> opPerms_rhs = convertArrayAttrIntTo2DVector(opPermsArrayAttr_rhs);
+      // opPerms = opPerms_rhs;
     }
 
     /// Get the perms and formats of the itCompute op
     void getLHSPermsOfComputeOp(Value computeOp, std::vector<std::vector<int>> &opPerms)
     {
-      indexTree::IndexTreeComputeLHSOp itComputeOp_lhs = dyn_cast<indexTree::IndexTreeComputeLHSOp>(computeOp.getDefiningOp()->getOperand(1).getDefiningOp());
-      ArrayAttr opPermsArrayAttr_lhs = itComputeOp_lhs.getAllPerms();
+      return;
+      // indexTree::IndexTreeComputeLHSOp itComputeOp_lhs = dyn_cast<indexTree::IndexTreeComputeLHSOp>(computeOp.getDefiningOp()->getOperand(1).getDefiningOp());
+      // ArrayAttr opPermsArrayAttr_lhs = itComputeOp_lhs.getAllPerms();
 
-      /// Get output format, vector of vector
-      /// Convert ArrayAttr into
-      std::vector<std::vector<int>> opPerms_lhs = convertArrayAttrIntTo2DVector(opPermsArrayAttr_lhs);
+      // /// Get output format, vector of vector
+      // /// Convert ArrayAttr into
+      // std::vector<std::vector<int>> opPerms_lhs = convertArrayAttrIntTo2DVector(opPermsArrayAttr_lhs);
 
-      opPerms = opPerms_lhs;
+      // opPerms = opPerms_lhs;
     }
 
     /// Get the perms and formats of the itCompute op
     void getPermsOfComputeOp(Value computeOp, std::vector<std::vector<int>> &opPerms)
     {
-      indexTree::IndexTreeComputeRHSOp itComputeOp_rhs = dyn_cast<indexTree::IndexTreeComputeRHSOp>(computeOp.getDefiningOp()->getOperand(0).getDefiningOp());
-      ArrayAttr opPermsArrayAttr_rhs = itComputeOp_rhs.getAllPerms();
-      indexTree::IndexTreeComputeLHSOp itComputeOp_lhs = dyn_cast<indexTree::IndexTreeComputeLHSOp>(computeOp.getDefiningOp()->getOperand(1).getDefiningOp());
-      ArrayAttr opPermsArrayAttr_lhs = itComputeOp_lhs.getAllPerms();
+      return;
+      // indexTree::IndexTreeComputeRHSOp itComputeOp_rhs = dyn_cast<indexTree::IndexTreeComputeRHSOp>(computeOp.getDefiningOp()->getOperand(0).getDefiningOp());
+      // ArrayAttr opPermsArrayAttr_rhs = itComputeOp_rhs.getAllPerms();
+      // indexTree::IndexTreeComputeLHSOp itComputeOp_lhs = dyn_cast<indexTree::IndexTreeComputeLHSOp>(computeOp.getDefiningOp()->getOperand(1).getDefiningOp());
+      // ArrayAttr opPermsArrayAttr_lhs = itComputeOp_lhs.getAllPerms();
 
-      /// Get output format, vector of vector
-      /// Convert ArrayAttr into
-      std::vector<std::vector<int>> opPerms_rhs = convertArrayAttrIntTo2DVector(opPermsArrayAttr_rhs);
-      std::vector<std::vector<int>> opPerms_lhs = convertArrayAttrIntTo2DVector(opPermsArrayAttr_lhs);
+      // /// Get output format, vector of vector
+      // /// Convert ArrayAttr into
+      // std::vector<std::vector<int>> opPerms_rhs = convertArrayAttrIntTo2DVector(opPermsArrayAttr_rhs);
+      // std::vector<std::vector<int>> opPerms_lhs = convertArrayAttrIntTo2DVector(opPermsArrayAttr_lhs);
 
-      opPerms = opPerms_rhs;
-      opPerms.insert(opPerms.end(), opPerms_lhs.begin(), opPerms_lhs.end());
+      // opPerms = opPerms_rhs;
+      // opPerms.insert(opPerms.end(), opPerms_lhs.begin(), opPerms_lhs.end());
     }
 
     double loopCostHeuristic(const std::vector<unsigned> &loopOrder, size_t dim_,
