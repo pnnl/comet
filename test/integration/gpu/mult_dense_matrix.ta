@@ -4,9 +4,9 @@
 
 def main() {
 	#IndexLabel Declarations
-	IndexLabel [i] = [128];
-	IndexLabel [j] = [64];  
-	IndexLabel [k] = [32];           
+	IndexLabel [i] = [8];
+	IndexLabel [j] = [4];  
+	IndexLabel [k] = [2];           
 
 	#Tensor Declarations
 	Tensor<double> A([i, j], {Dense});	  
