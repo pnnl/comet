@@ -521,6 +521,25 @@ public:
             collapseMemrefAndUsers(memref, builder);
         }
 
+        mlir::SmallVector<mlir::scf::ForallOp> forAllLoops;
+        funcOp->walk([&forAllLoops](mlir::scf::ForallOp forAllOp){forAllLoops.push_back(forAllOp);});
+        
+        for(auto forAllOp: forAllLoops)
+        {
+            builder.setInsertionPoint(forAllOp);
+            mlir::SmallVector<mlir::Value> lbs = forAllOp.getLowerBound(builder);
+            mlir::SmallVector<mlir::Value> ubs = forAllOp.getUpperBound(builder);
+            mlir::SmallVector<mlir::Value> steps = forAllOp.getStep(builder);
+            auto parallelOp = builder.create<mlir::scf::ParallelOp>(forAllOp->getLoc(), lbs, ubs, steps);
+            // parallelOp.getRegion().front().erase();
+            parallelOp.getRegion().takeBody(forAllOp.getRegion());
+            builder.setInsertionPointToEnd(&parallelOp.getRegion().front());
+            parallelOp.getRegion().front().getTerminator()->replaceAllUsesWith(builder.create<mlir::scf::ReduceOp>(parallelOp->getLoc()));
+            parallelOp.getRegion().front().getTerminator()->erase();
+            forAllOp.replaceAllUsesWith(parallelOp);
+            forAllOp->erase();
+        }
+
         mlir::RewritePatternSet patterns(context);
         patterns.insert<ParallelOpToGpu>(context, blockX, blockY, blockR);
         
